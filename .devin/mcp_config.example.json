@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "john": {
+      "command": "/absolute/path/to/john-mcp/.venv/bin/john-mcp",
+      "args": [
+        "--markdown-root", "/absolute/path/to/markdown",
+        "--chroma-path", "/absolute/path/to/chroma",
+        "--collection", "documents",
+        "--embedding", "gemini",
+        "--gemini-model", "gemini-embedding-001"
+      ]
+    }
+  }
+}
