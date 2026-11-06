@@ -8,7 +8,7 @@ dependencies = [
     "google-auth-oauthlib==1.4.1",
     "httpx==0.28.1",
     "mcp>=1.26,<2",
-    "mdtodb[gemini] @ git+https://github.com/SylvainRoy/mdtodb.git@aa53c3e46845faee8df3bebb6446987188e55b9b",
+    "mdtodb[gemini] @ git+https://github.com/SylvainRoy/mdtodb.git@133df1a48eef553db88c1576eb965339163aa9a7",
     "pypdf==6.19.0",
 ]
 

@@ -845,7 +845,7 @@ requires-dist = [
     { name = "google-auth-oauthlib", specifier = "==1.4.1" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "mcp", specifier = ">=1.26,<2" },
-    { name = "mdtodb", extras = ["gemini"], git = "https://github.com/SylvainRoy/mdtodb.git?rev=aa53c3e46845faee8df3bebb6446987188e55b9b" },
+    { name = "mdtodb", extras = ["gemini"], git = "https://github.com/SylvainRoy/mdtodb.git?rev=133df1a48eef553db88c1576eb965339163aa9a7" },
     { name = "pypdf", specifier = "==6.19.0" },
 ]
 
@@ -940,7 +940,7 @@ wheels = [
 [[package]]
 name = "mdtodb"
 version = "0.1.0"
-source = { git = "https://github.com/SylvainRoy/mdtodb.git?rev=aa53c3e46845faee8df3bebb6446987188e55b9b#aa53c3e46845faee8df3bebb6446987188e55b9b" }
+source = { git = "https://github.com/SylvainRoy/mdtodb.git?rev=133df1a48eef553db88c1576eb965339163aa9a7#133df1a48eef553db88c1576eb965339163aa9a7" }
 dependencies = [
     { name = "chromadb" },
     { name = "typer" },
