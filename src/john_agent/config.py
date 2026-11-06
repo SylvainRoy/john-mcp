@@ -14,6 +14,9 @@ from typing import Any, Mapping
 
 from john_agent.gmail_client import (
     ALLOWED_SCOPE_SETS,
+    CALENDAR_SCOPE,
+    CALENDAR_EVENTS_SCOPE,
+    GOOGLE_ENV,
     GMAIL_COMPOSE_SCOPE,
     GMAIL_ENV,
     GMAIL_SCOPE,
@@ -34,7 +37,9 @@ _SPECS = {
     'gemini_model': ('embedding', 'model', ('JOHN_GEMINI_MODEL',), 'gemini-embedding-001'),
     'gemini_api_key': ('embedding', 'api_key', ('GEMINI_API_KEY', 'GOOGLE_API_KEY'), None),
     'gmail': ('gmail', 'enabled', ('JOHN_GMAIL',), False),
-    'gmail_credentials': ('gmail', 'credentials', ('JOHN_GMAIL_CREDENTIALS',), None),
+    'gmail_credentials': ('google', 'credentials', (GOOGLE_ENV, GMAIL_ENV), None),
+    'calendar': ('calendar', 'enabled', ('JOHN_CALENDAR',), False),
+    'calendar_write': ('calendar', 'write', ('JOHN_CALENDAR_WRITE',), False),
     'gmail_drafts': ('gmail', 'drafts', ('JOHN_GMAIL_DRAFTS',), False),
     'gmail_attachment_roots': ('gmail', 'attachment_roots',
                                ('JOHN_GMAIL_ATTACHMENT_ROOTS',), []),
@@ -47,19 +52,23 @@ CONFIG_TEMPLATE = {
                'collection': 'documents'},
     'embedding': {'provider': 'gemini', 'model': 'gemini-embedding-001', 'api_key': None},
     'gmail': {'enabled': False, 'drafts': False, 'attachment_roots': [],
-              'source_root': None, 'credentials': {
+              'source_root': None},
+    'calendar': {'enabled': False, 'write': False},
+    'google': {'credentials': {
         'client_id': None, 'client_secret': None, 'refresh_token': None}},
     'env': {},
 }
 
 _SECTION_KEYS = {
+    'google': {'credentials'},
+    'calendar': {'enabled', 'write'},
     'corpus': {'markdown_root', 'chroma_path', 'collection'},
     'embedding': {'provider', 'model', 'api_key'},
     'gmail': {'enabled', 'credentials', 'drafts', 'attachment_roots', 'source_root'},
 }
 _CRED_FIELDS = ('client_id', 'client_secret', 'refresh_token')
 _CRED_ALLOWED = set(_CRED_FIELDS) | {'type', 'scopes'}
-_TOP_KEYS = {'version', 'corpus', 'embedding', 'gmail', 'env'}
+_TOP_KEYS = {'version', 'corpus', 'embedding', 'gmail', 'google', 'calendar', 'env'}
 _BOOL_TRUE = {'true', '1', 'yes', 'on'}
 _BOOL_FALSE = {'false', '0', 'no', 'off'}
 
@@ -95,6 +104,12 @@ class Settings:
     gmail_drafts: bool = False
     gmail_attachment_roots: list[Path] = field(default_factory=list)
     gmail_source_root: Path | None = None
+    calendar: bool = False
+    calendar_write: bool = False
+
+    @property
+    def google_credentials(self):
+        return self.gmail_credentials
 
 
 def _reject_constant(value: str) -> None:
@@ -143,8 +158,19 @@ def _validate_credentials_schema(creds: Any) -> None:
                 or not all(isinstance(s, str) for s in scopes) \
                 or frozenset(scopes) not in ALLOWED_SCOPE_SETS:
             raise ConfigError(
-                'gmail.credentials scopes must be the Gmail read-only scope, '
-                'optionally with the compose scope for drafts.')
+                'Google credentials scopes must use supported Gmail/Calendar scopes; '
+                'compose/events require their respective read-only scopes.')
+
+
+def credentials_location(data):
+    """Return the unique credential location, preserving legacy config layouts."""
+    locations = [(section, 'credentials') for section in ('google', 'gmail')
+                 if 'credentials' in (data.get(section) or {})]
+    locations += [('env', key) for key in (GOOGLE_ENV, GMAIL_ENV)
+                  if key in (data.get('env') or {})]
+    if len(locations) > 1:
+        raise ConfigError('Google credentials are defined more than once in the same source.')
+    return locations[0] if locations else ('google', 'credentials')
 
 
 def _validate_schema(data: dict[str, Any]) -> None:
@@ -188,6 +214,12 @@ def _validate_schema(data: dict[str, Any]) -> None:
         _nonempty_string('gmail.source_root', gmail['source_root'])
     if 'credentials' in gmail:
         _validate_credentials_schema(gmail['credentials'])
+    google = data.get('google') or {}
+    if 'credentials' in google:
+        _validate_credentials_schema(google['credentials'])
+    for key, value in (data.get('calendar') or {}).items():
+        if not isinstance(value, bool):
+            raise ConfigError(f'calendar.{key} must be a boolean.')
     if 'env' in data and not isinstance(data['env'], dict):
         raise ConfigError('env must be an object mapping names to strings.')
     env = data.get('env') or {}
@@ -209,16 +241,17 @@ def _validate_schema(data: dict[str, Any]) -> None:
                 'A setting is defined both structurally and in env; keep one source.')
     if 'GEMINI_API_KEY' in env and 'GOOGLE_API_KEY' in env:
         raise ConfigError('env must not define both Gemini API key aliases.')
+    credentials_location(data)
 
 
 def _has_secret_content(data: dict[str, Any]) -> bool:
     embedding = data.get('embedding') or {}
     if isinstance(embedding.get('api_key'), str) and embedding['api_key']:
         return True
-    gmail = data.get('gmail') or {}
-    creds = gmail.get('credentials')
-    if isinstance(creds, dict) and any(v is not None for v in creds.values()):
-        return True
+    for section in ('gmail', 'google'):
+        creds = (data.get(section) or {}).get('credentials')
+        if isinstance(creds, dict) and any(v is not None for v in creds.values()):
+            return True
     env = data.get('env') or {}
     return bool(env)
 
@@ -315,7 +348,7 @@ def _normalize_credentials(value: Any) -> dict[str, Any] | str | None:
         return value
     if isinstance(value, dict):
         declared = value.get('scopes')
-        scopes = sorted(declared) if isinstance(declared, list) and declared else [GMAIL_SCOPE]
+        scopes = sorted(declared) if isinstance(declared, list) else [GMAIL_SCOPE]
         return {
             'type': 'authorized_user',
             'scopes': scopes,
@@ -344,10 +377,20 @@ def resolve_settings(overrides: Mapping[str, Any], config: ConfigFile | None = N
     if environ is None:
         environ = os.environ
     file_data = config.data if config is not None else {}
+    overrides = dict(overrides)
+    if 'google_credentials' in overrides:
+        if 'gmail_credentials' in overrides:
+            raise ConfigError('Google credentials are defined more than once in CLI options.')
+        overrides['gmail_credentials'] = overrides.pop('google_credentials')
+    if GOOGLE_ENV in environ and GMAIL_ENV in environ:
+        raise ConfigError('Google credential environment aliases conflict.')
+    cred_section, cred_key = credentials_location(file_data)
     file_env = file_data.get('env') or {}
     config_dir = config.path.parent if config is not None else None
     selected: dict[str, tuple[Any, bool]] = {}
     for name, (section, key, aliases, default) in _SPECS.items():
+        if name == 'gmail_credentials':
+            section, key = cred_section, cred_key
         if name in overrides:
             value, from_file = overrides[name], False
         elif key in file_data.get(section, {}):
@@ -383,6 +426,10 @@ def resolve_settings(overrides: Mapping[str, Any], config: ConfigFile | None = N
     gmail_drafts = _to_bool('gmail_drafts', get('gmail_drafts')[0])
     if gmail_drafts and not gmail:
         raise ConfigError('gmail.drafts requires gmail.enabled.')
+    calendar = _to_bool('calendar', get('calendar')[0])
+    calendar_write = _to_bool('calendar_write', get('calendar_write')[0])
+    if calendar_write and not calendar:
+        raise ConfigError('calendar.write requires calendar.enabled.')
     roots_raw = get('gmail_attachment_roots')
     source_raw = get('gmail_source_root')
     return Settings(
@@ -394,6 +441,8 @@ def resolve_settings(overrides: Mapping[str, Any], config: ConfigFile | None = N
         gemini_model=_nonempty_string('gemini_model', get('gemini_model')[0]),
         gemini_api_key=gemini_api_key,
         gmail=gmail,
+        calendar=calendar,
+        calendar_write=calendar_write,
         gmail_credentials=_normalize_credentials(get('gmail_credentials')[0]),
         gmail_drafts=gmail_drafts,
         gmail_attachment_roots=_to_path_list(
@@ -408,11 +457,21 @@ def check_settings(settings: Settings) -> None:
     if settings.chroma_path is not None and settings.embedding == 'gemini' \
             and not settings.gemini_api_key:
         raise ConfigError('A Gemini API key is required when Chroma is configured.')
-    if settings.gmail:
+    check_google_settings(settings)
+
+
+def check_google_settings(settings: Settings) -> None:
+    if settings.gmail or settings.calendar:
         try:
             credentials = validate_credentials(settings.gmail_credentials)
         except GmailError as exc:
             raise ConfigError(str(exc)) from None
+        if settings.gmail and GMAIL_SCOPE not in credentials['scopes']:
+            raise ConfigError('gmail.enabled requires gmail.readonly scope.')
+        if settings.calendar and CALENDAR_SCOPE not in credentials['scopes']:
+            raise ConfigError('calendar.enabled requires calendar.readonly scope.')
+        if settings.calendar_write and CALENDAR_EVENTS_SCOPE not in credentials['scopes']:
+            raise ConfigError('calendar.write requires calendar.events scope.')
         if settings.gmail_drafts and GMAIL_COMPOSE_SCOPE not in credentials['scopes']:
             raise ConfigError(
                 'gmail.drafts requires credentials authorized with the Gmail '

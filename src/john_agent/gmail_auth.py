@@ -16,21 +16,24 @@ from john_agent.config import (
     ConfigError,
     SafeArgumentParser,
     load_config,
+    credentials_location,
     update_config,
 )
 from john_agent.gmail_client import (
     GMAIL_COMPOSE_SCOPE,
+    CALENDAR_SCOPE,
+    CALENDAR_EVENTS_SCOPE,
     GMAIL_ENV,
     GMAIL_SCOPE,
     TOKEN_URL,
 )
 
 _SUCCESS = (
-    'Authorization complete. Load the written JSON into the JOHN_GMAIL_CREDENTIALS '
+    'Authorization complete. Load the written JSON into the JOHN_GOOGLE_CREDENTIALS '
     'environment variable through your launcher or secret manager.'
 )
 _SUCCESS_CONFIG = (
-    'Authorization saved to the configuration. Enable gmail.enabled and restart the '
+    'Authorization saved to the configuration. Enable the desired Gmail/Calendar tools and restart the '
     'MCP server to use it.'
 )
 _FAILURE = 'Gmail authorization setup failed; check inputs and try again.'
@@ -65,14 +68,13 @@ def _write_credentials(output: Path, payload: dict) -> None:
 
 
 def _configured_client(config_file, which: str) -> str | None:
-    gmail = config_file.data.get('gmail') or {}
-    creds = gmail.get('credentials')
+    section, key = credentials_location(config_file.data)
+    creds = config_file.data.get(section, {}).get(key)
     if isinstance(creds, dict):
         value = creds.get(which)
         if isinstance(value, str) and value:
             return value
-    env = config_file.data.get('env') or {}
-    raw = env.get(GMAIL_ENV)
+    raw = creds if section == 'env' else None
     if isinstance(raw, str):
         try:
             if len(raw.encode('utf-8')) > _MAX_JSON:
@@ -92,8 +94,8 @@ def _configured_client(config_file, which: str) -> str | None:
 
 def main() -> None:
     parser = SafeArgumentParser(
-        prog='john-gmail-auth',
-        description='Interactive OAuth setup for the optional read-only Gmail tools.',
+        prog=Path(sys.argv[0]).name,
+        description='Interactive shared Google OAuth setup for optional Gmail and Calendar tools.',
     )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--output', type=Path)
@@ -101,9 +103,18 @@ def main() -> None:
     parser.add_argument('--drafts', action='store_true',
                         help='Also authorize the Gmail compose scope so the optional '
                              'draft tools can create drafts; drafts are never sent.')
+    parser.add_argument('--calendar', action='store_true', help='Authorize Calendar read-only access.')
+    parser.add_argument('--calendar-write', action='store_true', help='Authorize Calendar read and event writes without guest notifications.')
+    parser.add_argument('--no-gmail', action='store_true', help='Omit Gmail scopes; requires a Calendar flag.')
     args = parser.parse_args()
 
-    scopes = [GMAIL_SCOPE, GMAIL_COMPOSE_SCOPE] if args.drafts else [GMAIL_SCOPE]
+    if args.no_gmail and (not (args.calendar or args.calendar_write) or args.drafts):
+        parser.error('--no-gmail requires Calendar and cannot be used with --drafts.')
+    scopes = [] if args.no_gmail else ([GMAIL_SCOPE, GMAIL_COMPOSE_SCOPE] if args.drafts else [GMAIL_SCOPE])
+    if args.calendar or args.calendar_write:
+        scopes.append(CALENDAR_SCOPE)
+    if args.calendar_write:
+        scopes.append(CALENDAR_EVENTS_SCOPE)
     required = set(scopes)
 
     _quiet_library_loggers()
@@ -181,10 +192,8 @@ def main() -> None:
             fail()
         if config_file is not None:
             updated = copy.deepcopy(config_file.data)
-            if GMAIL_ENV in updated.get('env', {}):
-                updated['env'][GMAIL_ENV] = json.dumps(payload)
-            else:
-                updated.setdefault('gmail', {})['credentials'] = payload
+            section, key = credentials_location(updated)
+            updated.setdefault(section, {})[key] = json.dumps(payload) if section == 'env' else payload
             try:
                 update_config(config_file, updated)
             except ConfigError:

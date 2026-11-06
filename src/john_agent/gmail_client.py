@@ -6,26 +6,30 @@ import json
 import logging
 import os
 import re
-import threading
 import time
 from typing import Any
 from urllib.parse import quote
 
 import httpx
+from john_agent.google_tokens import GoogleTokens
 
 GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly'
 GMAIL_COMPOSE_SCOPE = 'https://www.googleapis.com/auth/gmail.compose'
-ALLOWED_SCOPE_SETS = frozenset({
-    frozenset({GMAIL_SCOPE}),
-    frozenset({GMAIL_SCOPE, GMAIL_COMPOSE_SCOPE}),
-})
+CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar.readonly'
+CALENDAR_EVENTS_SCOPE = 'https://www.googleapis.com/auth/calendar.events'
+ALLOWED_SCOPE_SETS = frozenset(
+    frozenset(gmail | calendar)
+    for gmail in (set(), {GMAIL_SCOPE}, {GMAIL_SCOPE, GMAIL_COMPOSE_SCOPE})
+    for calendar in (set(), {CALENDAR_SCOPE}, {CALENDAR_SCOPE, CALENDAR_EVENTS_SCOPE})
+)
+GOOGLE_ENV = 'JOHN_GOOGLE_CREDENTIALS'
 GMAIL_ENV = 'JOHN_GMAIL_CREDENTIALS'
 TOKEN_URL = 'https://oauth2.googleapis.com/token'
 API_ROOT = 'https://gmail.googleapis.com/gmail/v1/users/me'
 
 ERROR_MESSAGES = {
     'not_configured': 'Configure gmail.credentials or JOHN_GMAIL_CREDENTIALS after running john-gmail-auth.',
-    'invalid_credentials': 'Gmail credentials must be authorized-user JSON with only the Gmail read-only scope, or read-only plus compose for drafts.',
+    'invalid_credentials': 'Google credentials must be authorized-user JSON with supported Gmail/Calendar scopes; compose and events require their respective read-only scopes.',
     'authorization_required': 'Gmail authorization is missing, expired, or revoked; run the separate OAuth setup again.',
     'permission_denied': 'Gmail read-only access was not granted or is not available.',
     'rate_limited': 'Gmail temporarily limited requests; try again later.',
@@ -46,11 +50,9 @@ ERROR_MESSAGES = {
 _MESSAGE_ID_RE = re.compile(r'[A-Za-z0-9_-]{1,256}\Z')
 _ENV_JSON_CAP = 64 * 1024
 _FIELD_CAP = 16 * 1024
-_TOKEN_CAP = 64 * 1024
 _SMALL_CAP = 256 * 1024
 _MESSAGE_CAP = 32 * 1024 * 1024
 _ATTACHMENT_CAP = 15 * 1024 * 1024
-_TOKEN_MARGIN = 60.0
 _MAX_ATTEMPTS = 3
 _RETRY_SLEEPS = (0.25, 0.5)
 _RETRY_AFTER_CAP = 2.0
@@ -118,16 +120,14 @@ def validate_credentials(value: Any) -> dict[str, str]:
 
 class GmailClient:
     def __init__(self, *, credentials=None, use_environment: bool = True,
-                 http_client=None, sleep=time.sleep, clock=time.monotonic):
+                 http_client=None, sleep=time.sleep, clock=time.monotonic, token_provider=None):
         self._injected_credentials = credentials
         self._use_environment = use_environment
         self._http = http_client
         self._sleep = sleep
         self._clock = clock
         self._credentials: dict[str, Any] | None = None
-        self._access_token: str | None = None
-        self._token_expiry = 0.0
-        self._lock = threading.RLock()
+        self.tokens = token_provider or GoogleTokens(self._get_credentials, self._perform_json, clock)
         for name in ('httpx', 'httpcore'):
             logging.getLogger(name).setLevel(logging.WARNING)
 
@@ -139,7 +139,9 @@ class GmailClient:
     def _load_credentials(self) -> dict[str, Any]:
         value = self._injected_credentials
         if value is None and self._use_environment:
-            value = os.environ.get(GMAIL_ENV)
+            if GOOGLE_ENV in os.environ and GMAIL_ENV in os.environ:
+                raise GmailError('invalid_credentials')
+            value = os.environ.get(GOOGLE_ENV, os.environ.get(GMAIL_ENV))
         self._credentials = validate_credentials(value)
         return self._credentials
 
@@ -150,32 +152,10 @@ class GmailClient:
 
     @property
     def scopes(self) -> frozenset:
-        return self._get_credentials()['scopes']
+        return self.tokens.scopes
 
     def _refresh(self, *, force: bool = False) -> str:
-        with self._lock:
-            now = self._clock()
-            if not force and self._access_token and now < self._token_expiry:
-                return self._access_token
-            creds = self._get_credentials()
-            payload = self._perform_json(
-                'POST', TOKEN_URL, cap=_TOKEN_CAP, token_request=True,
-                data={'grant_type': 'refresh_token', 'client_id': creds['client_id'],
-                      'client_secret': creds['client_secret'], 'refresh_token': creds['refresh_token']},
-            )
-            token = payload.get('access_token')
-            expires = payload.get('expires_in')
-            if not isinstance(token, str) or not token:
-                raise GmailError('invalid_response')
-            if isinstance(expires, bool) or not isinstance(expires, int) or expires <= 0:
-                raise GmailError('invalid_response')
-            scope = payload.get('scope')
-            if scope is not None:
-                if not isinstance(scope, str) or set(scope.split()) != creds['scopes']:
-                    raise GmailError('invalid_response')
-            self._access_token = token
-            self._token_expiry = self._clock() + expires - _TOKEN_MARGIN
-            return token
+        return self.tokens.refresh(force=force)
 
     def _read_json(self, response: httpx.Response, cap: int) -> dict[str, Any]:
         chunks = []

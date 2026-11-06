@@ -14,7 +14,13 @@
     "enabled": false,
     "drafts": false,
     "attachment_roots": [],
-    "source_root": null,
+    "source_root": null
+  },
+  "calendar": {
+    "enabled": false,
+    "write": false
+  },
+  "google": {
     "credentials": {
       "client_id": null,
       "client_secret": null,
