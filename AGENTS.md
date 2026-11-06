@@ -9,4 +9,25 @@
 - Run this project's tests with `uv run --frozen pytest`.
 - Retrieval-library tests live in the separate `mdtodb` repository. This project's tests exercise its pinned dependency.
 - Inspect startup options with `uv run --frozen john-mcp --help`.
-- The non-active client configuration example is `.devin/mcp_config.example.json`. Replace its `/absolute/path/to/...` placeholders with your own locations. Credentials belong in the client process environment, never in committed configuration.
+- The non-active client configuration example is `.devin/mcp_config.example.json`. It launches John with `--config /absolute/path/to/john-mcp.json`; replace its placeholders with your own locations. Keep live credentials in a private configuration file or the process environment, never in committed configuration.
+- The workspace checkout directory is `john-mcp`; the Python distribution remains `john-agent` and the import package remains `john_agent`.
+
+## Configuration
+
+- Create a template with `uv run --frozen john-mcp --init-config /absolute/private/path/john-mcp.json`. The parent directory must exist; the command creates a mode-0600 file and refuses to overwrite any existing path.
+- Settings resolve in this order: explicit CLI options, the selected JSON file, inherited environment variables, built-in defaults. No configuration file is discovered automatically. See `CONFIGURATION.md` and `john-mcp.example.json` for the schema and environment aliases.
+- Relative paths in the file resolve against its directory. Optional `null` values suppress environment fallback; duplicate definitions in structured settings and the file's `env` map are rejected.
+- Validate locally with `uv run --frozen john-mcp --config /absolute/private/path/john-mcp.json --check-config`. This does not contact Google or inspect corpus/index contents. Restart the server after configuration changes.
+- The server reads the explicitly selected configuration at startup, including any embedded secrets, but never rewrites it. Files containing secrets or `env` entries must be owned by the current user with no group/other permissions on POSIX.
+
+## Gmail tools
+
+- Gmail is opt-in through `gmail.enabled`, `--gmail`, or `JOHN_GMAIL`; `--no-gmail` overrides the file and environment. When disabled, only the five corpus tools are registered. The three additional tools are `search_emails`, `read_email`, and `read_email_attachment`.
+- Gmail uses one personal account, native Gmail search, and the `https://www.googleapis.com/auth/gmail.readonly` scope. It never sends mail, changes labels/read state, imports documents, or updates indexes. Spam and Trash are excluded from searches unless explicitly requested.
+- Put `client_id`, `client_secret`, and `refresh_token` in `gmail.credentials`. Structured credentials use the authorized-user type and Gmail read-only scope; other types or scopes are rejected. `JOHN_GMAIL_CREDENTIALS` and the explicit `--gmail-credentials` CLI override accept complete authorized-user JSON. Credentials are selected as a whole object, never merged between sources. Do not put credential values in MCP tool arguments or committed configuration.
+- For first-time setup, enable the Gmail API in a Google Cloud project and create an OAuth Desktop app client. Run `uv run --frozen john-gmail-auth --config /absolute/private/path/john-mcp.json` yourself in an interactive terminal. It reuses configured client settings, prompts for missing values, performs browser consent with a loopback callback, and atomically saves credentials into the same file with mode 0600 while preserving other settings. Set `gmail.enabled` to `true` and restart the MCP server afterwards.
+- The older `john-gmail-auth --output /absolute/private/path/gmail-credentials.json` flow remains supported; it creates a separate file without overwriting an existing path, whose JSON can be supplied through `JOHN_GMAIL_CREDENTIALS`. Startup and tool discovery do not contact Google or refresh access tokens. Do not paste credentials into chat or logs; never run real OAuth consent in automated tests.
+- Google external OAuth apps in Testing issue Gmail refresh tokens that expire after seven days. Handle personal-use publishing/consent settings deliberately and rerun the separate setup when reauthorization is needed; public distribution requires a separate OAuth-policy review.
+- Email and PDF contents are transient. PDFs are limited to 10 MiB, 100 pages, and 1,000,000 extracted characters, with a 15-second local worker timeout. The worker receives no credential environment. OCR, cloud conversion, Office attachments, remote-link fetching, and persistent mail indexing are not supported.
+- Gmail tests use fake HTTP transports, synthetic MIME messages/PDFs, and blocked network connections. Run the complete verification with `uv run --frozen pytest`; inspect setup help with `uv run --frozen john-gmail-auth --help`.
+- Dependency updates must preserve the existing `uv.lock` `exclude-newer` cutoff unless a change is explicitly approved.

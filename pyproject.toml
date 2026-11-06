@@ -1,16 +1,20 @@
 [project]
 name = "john-agent"
-version = "0.1.0"
+version = "1.0.0"
 description = "User-initiated, read-only MCP document tools over a pdftomd/mdtodb corpus"
 requires-python = ">=3.11,<3.14"
 dependencies = [
     "chromadb==1.5.9",
+    "google-auth-oauthlib==1.4.1",
+    "httpx==0.28.1",
     "mcp>=1.26,<2",
     "mdtodb[gemini] @ git+https://github.com/SylvainRoy/mdtodb.git@0ac63eeb8967febc256f7970bb70ba4d4b6b2d81",
+    "pypdf==6.19.0",
 ]
 
 [project.scripts]
 john-mcp = "john_agent.server:main"
+john-gmail-auth = "john_agent.gmail_auth:main"
 
 [build-system]
 requires = ["hatchling>=1.27,<2"]

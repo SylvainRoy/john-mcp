@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "corpus": {
+    "markdown_root": "/absolute/path/to/markdown",
+    "chroma_path": null,
+    "collection": "documents"
+  },
+  "embedding": {
+    "provider": "gemini",
+    "model": "gemini-embedding-001",
+    "api_key": null
+  },
+  "gmail": {
+    "enabled": false,
+    "credentials": {
+      "client_id": null,
+      "client_secret": null,
+      "refresh_token": null
+    }
+  },
+  "env": {}
+}
