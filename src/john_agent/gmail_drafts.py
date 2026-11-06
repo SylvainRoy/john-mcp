@@ -119,6 +119,16 @@ class GmailDrafter:
         return result
 
     @staticmethod
+    def _check_header(value: Any) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str) or '\x00' in value or '\r' in value \
+                or '\n' in value \
+                or len(value.encode('utf-8', errors='ignore')) > _MAX_FIELD_BYTES:
+            raise GmailError('invalid_response')
+        return value
+
+    @staticmethod
     def _check_field(name: str, value: Any, *, required: bool) -> str | None:
         if value is None:
             if required:
@@ -185,7 +195,7 @@ class GmailDrafter:
         if original.get('id') != message_id:
             raise GmailError('invalid_response')
         headers = _headers_of(original.get('payload') or {})
-        to = headers.get('reply-to') or headers.get('from', '')
+        to = self._check_header(headers.get('reply-to') or headers.get('from', ''))
         if reply_all:
             own = self._get_account(client).lower()
             seen = {own}
@@ -200,14 +210,16 @@ class GmailDrafter:
 
             to = unique([to, headers.get('to', '')])
             cc = unique([headers.get('cc', ''), cc or ''])
+        to = self._check_header(to)
+        cc = self._check_header(cc)
         if not to:
             raise GmailError('invalid_response')
-        subject = headers.get('subject', '')
+        subject = self._check_header(headers.get('subject', ''))
         if not subject.lower().startswith('re:'):
             subject = 'Re: ' + subject
-        message_id_header = headers.get('message-id')
-        references = ' '.join(
-            part for part in (headers.get('references'), message_id_header) if part)
+        message_id_header = self._check_header(headers.get('message-id'))
+        references = self._check_header(' '.join(
+            part for part in (headers.get('references'), message_id_header) if part))
         return self._draft(to, subject, body, cc, bcc, attachments,
                            document_attachments, original.get('threadId'),
                            message_id_header, references or None)

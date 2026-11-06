@@ -285,3 +285,44 @@ def test_close_closes_client():
     drafter.close()
     assert client.closed is True
     drafter.close()
+
+
+def test_reply_rejects_header_injection_in_reply_to():
+    client = FakeClient()
+    client.messages['m1'] = make_message('m1', [
+        ('Reply-To', '"x\r\nBcc: evil@example.com" <a@example.com>'),
+        ('From', 'a@example.com'),
+        ('Subject', 'Hi'),
+        ('Message-ID', '<m1@x>'),
+    ])
+    with pytest.raises(GmailError) as exc:
+        drafter_for(client).create_reply_draft('m1', 'body')
+    assert exc.value.code == 'invalid_response'
+    assert client.drafts == []
+    assert not any(c[0] == 'create_draft' for c in client.calls)
+
+
+def test_reply_rejects_header_injection_in_subject():
+    client = FakeClient()
+    client.messages['m1'] = make_message('m1', [
+        ('From', 'a@example.com'),
+        ('Subject', 'Hi\nBcc: evil@example.com'),
+        ('Message-ID', '<m1@x>'),
+    ])
+    with pytest.raises(GmailError) as exc:
+        drafter_for(client).create_reply_draft('m1', 'body')
+    assert exc.value.code == 'invalid_response'
+    assert client.drafts == []
+
+
+def test_reply_rejects_oversized_derived_header():
+    client = FakeClient()
+    client.messages['m1'] = make_message('m1', [
+        ('From', 'a@example.com'),
+        ('Subject', 'x' * (20 * 1024)),
+        ('Message-ID', '<m1@x>'),
+    ])
+    with pytest.raises(GmailError) as exc:
+        drafter_for(client).create_reply_draft('m1', 'body')
+    assert exc.value.code == 'invalid_response'
+    assert client.drafts == []
