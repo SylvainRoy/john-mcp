@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "User-initiated, read-only MCP document tools over a pdftomd/mdtodb corpus"
 requires-python = ">=3.11,<3.14"
 dependencies = [
+    "google-api-python-client>=2,<3",
+    "google-auth-oauthlib>=1,<2",
     "chromadb==1.5.9",
     "mcp>=1.26,<2",
     "mdtodb[gemini] @ git+https://github.com/SylvainRoy/mdtodb.git@0ac63eeb8967febc256f7970bb70ba4d4b6b2d81",

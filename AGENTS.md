@@ -1,6 +1,6 @@
 # Project information
 
-- This project exposes user-initiated, read-only document tools over MCP stdio. It has no autonomous agent loop, scheduler, or external action tools.
+- This project exposes user-initiated, read-only document tools and optional draft-only Gmail tools over MCP stdio. It has no autonomous agent loop or scheduler. Gmail drafts are never sent: users review and send manually in Gmail. Never add delivery operations or send tools.
 - Reuse `mdtodb` and `pdftomd` as Python libraries only. Do not invoke their CLIs.
 - The `mdtodb` dependency is pinned to an immutable GitHub commit in `pyproject.toml` and `uv.lock`; no sibling checkout is required. Chroma compatibility remains pinned to 1.5.9.
 - Never read credential files or run tests against the user's real document repository, Chroma database, or Google accounts. Use synthetic temporary fixtures and fake embeddings.
