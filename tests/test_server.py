@@ -14,7 +14,7 @@ from mcp.shared.memory import create_connected_server_and_client_session
 
 from mdtodb import CorpusReader
 
-from john_agent.server import REVIEW_TEMPLATE, create_server
+from john_agent.server import REVIEW_TEMPLATE, SERVER_INSTRUCTIONS, create_server
 
 
 def make_tree(tmp_path: Path, files: dict[str, str]) -> Path:
@@ -27,9 +27,13 @@ def make_tree(tmp_path: Path, files: dict[str, str]) -> Path:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, "utf-8")
         manifest["files"][rel] = {"fingerprint": f"fp:{rel}", "engine": "fake", "output": out}
+        if rel.startswith("personnes/"):
+            manifest["files"][rel]["source_url"] = SOURCE_URL
     (md_dir / ".pdftomd-manifest.json").write_text(json.dumps(manifest), "utf-8")
     return md_dir
 
+
+SOURCE_URL = "https://drive.google.com/file/d/synthetic-id/view"
 
 FILES = {
     "personnes/Alice/assurance/contrat-habitation.pdf": "# Assurance\n\nFranchise élevée.\n",
@@ -102,6 +106,8 @@ def test_tool_calls_and_structured_content(reader):
             assert [r["document"]["document_id"] for r in results] == [
                 "personnes/Alice/assurance/contrat-habitation.pdf"
             ]
+            assert results[0]["document"]["source_url"] == SOURCE_URL
+            assert results[0]["excerpt"]["source_url"] == SOURCE_URL
 
             read = await session.call_tool(
                 "read_document",
@@ -118,6 +124,42 @@ def test_tool_calls_and_structured_content(reader):
             assert len(find.structuredContent["matches"]) == 1
 
     run(go())
+
+
+@pytest.mark.parametrize("doc_id,expected", [
+    ("personnes/Alice/assurance/contrat-habitation.pdf", SOURCE_URL),
+    ("banque/comptes/contrat-compte.pdf", None),
+])
+def test_source_url_in_tool_outputs(reader, doc_id, expected):
+    async def go():
+        async with create_connected_server_and_client_session(create_server(reader)) as session:
+            listed = await session.call_tool("list_documents", {})
+            document = next(d for d in listed.structuredContent["documents"] if d["document_id"] == doc_id)
+            assert document["source_url"] == expected
+            read = await session.call_tool("read_document", {"document_id": doc_id})
+            assert read.structuredContent["document"]["source_url"] == expected
+            assert read.structuredContent["excerpt"]["source_url"] == expected
+            assert len(read.structuredContent["excerpt"]["markdown_sha256"]) == 64
+            find = await session.call_tool("find_in_document", {"document_id": doc_id, "query": "e"})
+            assert find.structuredContent["document"]["source_url"] == expected
+            assert find.structuredContent["matches"]
+            assert all(m["excerpt"]["source_url"] == expected for m in find.structuredContent["matches"])
+            search = await session.call_tool("search_documents", {"query": "franchise" if expected else "frais"})
+            hit = search.structuredContent["results"][0]
+            assert hit["document"]["source_url"] == expected
+            assert hit["excerpt"]["source_url"] == expected
+
+    run(go())
+
+
+@pytest.mark.parametrize("text", [SERVER_INSTRUCTIONS, REVIEW_TEMPLATE])
+def test_citation_guidance(text):
+    assert "[<file name>](<source_url>)" in text
+    assert "lignes 59–71, 172–180" in text
+    assert "source_url is null, fall back to document_id" in text
+    assert "ranges refer to the Markdown conversion" in text
+    assert "Do not show markdown_sha256 to the user; it remains in tool output" in text
+    assert "document_id as the input key for read_document and find_in_document" in text
 
 
 def test_tool_error_is_safe(reader):

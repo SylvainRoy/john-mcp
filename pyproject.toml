@@ -6,7 +6,7 @@ requires-python = ">=3.11,<3.14"
 dependencies = [
     "chromadb==1.5.9",
     "mcp>=1.26,<2",
-    "mdtodb[gemini] @ git+https://github.com/SylvainRoy/mdtodb.git@0ac63eeb8967febc256f7970bb70ba4d4b6b2d81",
+    "mdtodb[gemini] @ git+https://github.com/SylvainRoy/mdtodb.git@aa53c3e46845faee8df3bebb6446987188e55b9b",
 ]
 
 [project.scripts]

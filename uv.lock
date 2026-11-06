@@ -1,14 +1,11 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.11, <3.14"
 resolution-markers = [
     "python_full_version >= '3.13'",
     "python_full_version == '3.12.*'",
     "python_full_version < '3.12'",
 ]
-
-[options]
-exclude-newer = "2026-09-20T22:00:00Z"
 
 [[package]]
 name = "aiohappyeyeballs"
@@ -827,7 +824,7 @@ dev = [
 requires-dist = [
     { name = "chromadb", specifier = "==1.5.9" },
     { name = "mcp", specifier = ">=1.26,<2" },
-    { name = "mdtodb", extras = ["gemini"], git = "https://github.com/SylvainRoy/mdtodb.git?rev=0ac63eeb8967febc256f7970bb70ba4d4b6b2d81" },
+    { name = "mdtodb", extras = ["gemini"], git = "https://github.com/SylvainRoy/mdtodb.git?rev=aa53c3e46845faee8df3bebb6446987188e55b9b" },
 ]
 
 [package.metadata.requires-dev]
@@ -921,7 +918,7 @@ wheels = [
 [[package]]
 name = "mdtodb"
 version = "0.1.0"
-source = { git = "https://github.com/SylvainRoy/mdtodb.git?rev=0ac63eeb8967febc256f7970bb70ba4d4b6b2d81#0ac63eeb8967febc256f7970bb70ba4d4b6b2d81" }
+source = { git = "https://github.com/SylvainRoy/mdtodb.git?rev=aa53c3e46845faee8df3bebb6446987188e55b9b#aa53c3e46845faee8df3bebb6446987188e55b9b" }
 dependencies = [
     { name = "chromadb" },
     { name = "typer" },
