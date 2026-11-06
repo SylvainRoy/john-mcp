@@ -7,7 +7,11 @@
         "--chroma-path", "/absolute/path/to/chroma",
         "--collection", "documents",
         "--embedding", "gemini",
-        "--gemini-model", "gemini-embedding-001"
+        "--gemini-model", "gemini-embedding-001",
+        "--gmail-credentials", "/absolute/path/to/oauth-client.json",
+        "--gmail-token", "/absolute/path/to/gmail-token.json",
+        "--attachment-root", "/absolute/path/to/attachments",
+        "--source-root", "/absolute/path/to/original-sources"
       ]
     }
   }
