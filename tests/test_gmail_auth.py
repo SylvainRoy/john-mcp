@@ -228,12 +228,13 @@ def test_write_failure_removes_only_own_partial(tmp_path, monkeypatch):
 
 def test_write_failure_keeps_replaced_path(tmp_path, monkeypatch):
     out = tmp_path / 'creds.json'
-    real_fdopen = os.fdopen
 
     def racy_fdopen(fd, mode='r', *a, **k):
-        os.close(fd)
+        original = os.fstat(fd)
         out.unlink(missing_ok=True)
         out.write_text('replacement')
+        replacement = out.stat()
+        assert (original.st_dev, original.st_ino) != (replacement.st_dev, replacement.st_ino)
         raise RuntimeError('mid-write race')
 
     monkeypatch.setattr(gmail_auth.os, 'fdopen', racy_fdopen)
