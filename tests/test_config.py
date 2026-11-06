@@ -453,8 +453,9 @@ def test_cli_wiring(tmp_path, monkeypatch):
         def run(self):
             captured['ran'] = True
 
-    def fake_create(reader, gmail_reader=None):
+    def fake_create(reader, gmail_reader=None, gmail_drafter=None):
         captured['gmail_reader'] = gmail_reader
+        captured['gmail_drafter'] = gmail_drafter
         return FakeServer()
 
     embed_calls = []
@@ -498,7 +499,7 @@ def test_cli_null_key_blocks_env_fallback(tmp_path, monkeypatch):
             pass
 
     monkeypatch.setattr(server, 'CorpusReader', FakeReader)
-    monkeypatch.setattr(server, 'create_server', lambda r, gmail_reader=None: FakeServer())
+    monkeypatch.setattr(server, 'create_server', lambda r, gmail_reader=None, gmail_drafter=None: FakeServer())
     path = write_config(tmp_path, base_config(embedding={'api_key': None}))
     monkeypatch.setenv('GEMINI_API_KEY', 'ENVKEY')
     monkeypatch.setattr(sys, 'argv', ['john-mcp', '--config', str(path)])
@@ -520,8 +521,9 @@ def test_cli_gmail_credentials_and_no_gmail(tmp_path, monkeypatch):
         def run(self):
             pass
 
-    def fake_create(reader, gmail_reader=None):
+    def fake_create(reader, gmail_reader=None, gmail_drafter=None):
         captured['gmail_reader'] = gmail_reader
+        captured['gmail_drafter'] = gmail_drafter
         return FakeServer()
 
     monkeypatch.setattr(server, 'CorpusReader', FakeReader)
@@ -607,3 +609,160 @@ def test_no_implicit_config_reads(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, 'argv', ['john-mcp', '--markdown-root', '/tmp/md'])
     server.main()
+
+
+DRAFT_CREDS = {
+    'client_id': 'cid', 'client_secret': 'csec', 'refresh_token': 'rtok',
+    'scopes': ['https://www.googleapis.com/auth/gmail.readonly',
+               'https://www.googleapis.com/auth/gmail.compose'],
+}
+
+
+def test_drafts_requires_gmail():
+    with pytest.raises(ConfigError) as exc:
+        resolve({'markdown_root': '/tmp/md', 'gmail_drafts': True})
+    assert 'gmail.drafts requires gmail.enabled' in str(exc.value)
+
+
+def test_drafts_precedence(tmp_path):
+    cfg = load_config(write_config(tmp_path, base_config(
+        gmail={'enabled': True, 'drafts': True})))
+    settings = resolve({'markdown_root': '/tmp/md'}, cfg,
+                       {'JOHN_GMAIL_DRAFTS': 'false'})
+    assert settings.gmail_drafts is True
+    settings = resolve({'markdown_root': '/tmp/md'}, None,
+                       {'JOHN_GMAIL': 'true', 'JOHN_GMAIL_DRAFTS': 'true'})
+    assert settings.gmail_drafts is True
+    settings = resolve({'markdown_root': '/tmp/md', 'gmail_drafts': False}, cfg, {})
+    assert settings.gmail_drafts is False
+    settings = resolve({'markdown_root': '/tmp/md'})
+    assert settings.gmail_drafts is False
+
+
+def test_attachment_roots_and_source_root_resolution(tmp_path, monkeypatch):
+    cfg_dir = tmp_path / 'conf'
+    cfg_dir.mkdir()
+    path = cfg_dir / 'john-mcp.json'
+    path.write_text(json.dumps(base_config(
+        gmail={'enabled': True, 'drafts': True,
+               'attachment_roots': ['files', '/abs/root'],
+               'source_root': 'sources'})))
+    path.chmod(0o600)
+    settings = resolve({'markdown_root': '/tmp/md'}, load_config(path), {})
+    assert settings.gmail_attachment_roots == [
+        Path(os.path.abspath(cfg_dir / 'files')), Path('/abs/root')]
+    assert settings.gmail_source_root == Path(os.path.abspath(cfg_dir / 'sources'))
+
+    monkeypatch.chdir(tmp_path)
+    joined = 'a' + os.pathsep + str(tmp_path / 'b')
+    settings = resolve({'markdown_root': '/tmp/md', 'gmail': True}, None,
+                       {'JOHN_GMAIL_ATTACHMENT_ROOTS': joined,
+                        'JOHN_GMAIL_SOURCE_ROOT': 'srcenv'})
+    assert settings.gmail_attachment_roots == [
+        Path(os.path.abspath(tmp_path / 'a')), tmp_path / 'b']
+    assert settings.gmail_source_root == Path(os.path.abspath(tmp_path / 'srcenv'))
+
+    settings = resolve({'markdown_root': '/tmp/md', 'gmail': True,
+                        'gmail_attachment_roots': ['/cli/root']}, None, {})
+    assert settings.gmail_attachment_roots == [Path('/cli/root')]
+
+    settings = resolve({'markdown_root': '/tmp/md', 'gmail': True})
+    assert settings.gmail_attachment_roots == []
+    assert settings.gmail_source_root is None
+
+
+def test_attachment_roots_null_blocks_env(tmp_path):
+    cfg = load_config(write_config(tmp_path, base_config(
+        gmail={'enabled': True, 'attachment_roots': None, 'source_root': None})))
+    settings = resolve({'markdown_root': '/tmp/md'}, cfg,
+                       {'JOHN_GMAIL_ATTACHMENT_ROOTS': '/env/root',
+                        'JOHN_GMAIL_SOURCE_ROOT': '/env/src'})
+    assert settings.gmail_attachment_roots == []
+    assert settings.gmail_source_root is None
+
+
+@pytest.mark.parametrize('gmail', [
+    {'drafts': 'yes'},
+    {'attachment_roots': '/notalist'},
+    {'attachment_roots': ['ok', '']},
+    {'attachment_roots': [5]},
+    {'source_root': 7},
+])
+def test_gmail_drafts_schema_rejections(tmp_path, gmail):
+    path = write_config(tmp_path, base_config(gmail=gmail))
+    with pytest.raises(ConfigError):
+        load_config(path)
+
+
+def test_check_drafts_requires_compose_scope(tmp_path):
+    cfg = load_config(write_config(tmp_path, base_config(
+        gmail={'enabled': True, 'drafts': True, 'credentials': GOOD_CREDS})))
+    settings = resolve({}, cfg, {})
+    with pytest.raises(ConfigError) as exc:
+        check_settings(settings)
+    assert 'john-gmail-auth --drafts' in str(exc.value)
+
+    cfg = load_config(write_config(tmp_path, base_config(
+        gmail={'enabled': True, 'drafts': True, 'credentials': DRAFT_CREDS})))
+    check_settings(resolve({}, cfg, {}))
+
+    cfg = load_config(write_config(tmp_path, base_config(
+        gmail={'enabled': True, 'credentials': GOOD_CREDS})))
+    check_settings(resolve({}, cfg, {}))
+
+
+def test_credential_schema_compose_scope_accepted(tmp_path):
+    cfg = load_config(write_config(tmp_path, base_config(
+        gmail={'credentials': DRAFT_CREDS})))
+    settings = resolve({}, cfg, {})
+    assert set(settings.gmail_credentials['scopes']) == set(DRAFT_CREDS['scopes'])
+
+
+def test_check_config_drafts_happy_path(tmp_path, monkeypatch, capsys):
+    import john_agent.server as server
+
+    path = write_config(tmp_path, base_config(
+        gmail={'enabled': True, 'drafts': True, 'credentials': DRAFT_CREDS}))
+    monkeypatch.setattr(sys, 'argv',
+                        ['john-mcp', '--config', str(path), '--check-config'])
+    server.main()
+    assert 'Configuration is valid' in capsys.readouterr().out
+
+
+def test_cli_drafts_wiring(tmp_path, monkeypatch):
+    import john_agent.server as server
+
+    captured = {}
+
+    class FakeReader:
+        def __init__(self, *a, **k):
+            pass
+
+    class FakeServer:
+        def run(self):
+            pass
+
+    def fake_create(reader, gmail_reader=None, gmail_drafter=None):
+        captured['gmail_reader'] = gmail_reader
+        captured['gmail_drafter'] = gmail_drafter
+        return FakeServer()
+
+    monkeypatch.setattr(server, 'CorpusReader', FakeReader)
+    monkeypatch.setattr(server, 'create_server', fake_create)
+    path = write_config(tmp_path, base_config(
+        gmail={'enabled': True, 'credentials': DRAFT_CREDS}))
+    monkeypatch.setattr(sys, 'argv', [
+        'john-mcp', '--config', str(path), '--gmail-drafts',
+        '--attachment-root', '/cli/root', '--source-root', '/cli/src'])
+    server.main()
+    drafter = captured['gmail_drafter']
+    assert drafter is not None
+    assert drafter.roots == [Path('/cli/root').resolve()]
+    assert drafter.source_root == Path('/cli/src').resolve()
+
+    captured.clear()
+    monkeypatch.setattr(sys, 'argv',
+                        ['john-mcp', '--config', str(path)])
+    server.main()
+    assert captured['gmail_drafter'] is None
+    assert captured['gmail_reader'] is not None

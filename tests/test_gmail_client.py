@@ -9,6 +9,7 @@ import pytest
 
 from john_agent.gmail_client import (
     API_ROOT,
+    GMAIL_COMPOSE_SCOPE,
     GMAIL_ENV,
     GMAIL_SCOPE,
     TOKEN_URL,
@@ -23,6 +24,7 @@ CREDS = {
     'refresh_token': 'synthetic-refresh',
     'scopes': [GMAIL_SCOPE],
 }
+COMPOSE_CREDS = {**CREDS, 'scopes': [GMAIL_SCOPE, GMAIL_COMPOSE_SCOPE]}
 
 
 def make_client(handler, *, credentials=CREDS, clock=None):
@@ -96,6 +98,10 @@ def test_env_credentials_parsed_lazily(monkeypatch):
      'scopes': ['https://mail.google.com/']},
     {'type': 'authorized_user', 'client_id': 'x', 'client_secret': 'y', 'refresh_token': 'z',
      'scopes': [GMAIL_SCOPE, 'extra']},
+    {'type': 'authorized_user', 'client_id': 'x', 'client_secret': 'y', 'refresh_token': 'z',
+     'scopes': [GMAIL_COMPOSE_SCOPE]},
+    {'type': 'authorized_user', 'client_id': 'x', 'client_secret': 'y', 'refresh_token': 'z',
+     'scopes': [GMAIL_SCOPE, GMAIL_COMPOSE_SCOPE, 'https://mail.google.com/']},
 ])
 def test_invalid_credentials_rejected(monkeypatch, bad):
     client, requests, _ = make_client(lambda r: ok({}), credentials=None)
@@ -609,6 +615,86 @@ def test_validate_credentials_pure_and_sanitized():
     with pytest.raises(GmailError) as exc:
         validate_credentials(None)
     assert exc.value.code == 'not_configured'
+
+
+def test_compose_credentials_accepted_and_exposed():
+    def handler(request):
+        if request.url.host == 'oauth2.googleapis.com':
+            return token_response(scope=f'{GMAIL_SCOPE} {GMAIL_COMPOSE_SCOPE}')
+        return ok({'emailAddress': 'a@b.c'})
+
+    client, _, _ = make_client(handler, credentials=COMPOSE_CREDS)
+    assert client.get_profile()['emailAddress'] == 'a@b.c'
+    assert client.scopes == frozenset({GMAIL_SCOPE, GMAIL_COMPOSE_SCOPE})
+
+
+def test_compose_refresh_requires_full_scope_set():
+    def handler(request):
+        if request.url.host == 'oauth2.googleapis.com':
+            return token_response(scope=GMAIL_SCOPE)
+        return ok({})
+
+    client, _, _ = make_client(handler, credentials=COMPOSE_CREDS)
+    with pytest.raises(GmailError) as exc:
+        client.get_profile()
+    assert exc.value.code == 'invalid_response'
+
+
+def test_readonly_refresh_rejects_compose_scope():
+    def handler(request):
+        if request.url.host == 'oauth2.googleapis.com':
+            return token_response(scope=f'{GMAIL_SCOPE} {GMAIL_COMPOSE_SCOPE}')
+        return ok({})
+
+    client, _, _ = make_client(handler)
+    with pytest.raises(GmailError) as exc:
+        client.get_profile()
+    assert exc.value.code == 'invalid_response'
+
+
+def test_create_draft_posts_json_and_retries_401():
+    state = {'posts': 0, 'tokens': 0}
+
+    def handler(request):
+        if request.url.host == 'oauth2.googleapis.com':
+            state['tokens'] += 1
+            return token_response(
+                scope=f'{GMAIL_SCOPE} {GMAIL_COMPOSE_SCOPE}',
+                access_token=f'tok{state["tokens"]}')
+        state['posts'] += 1
+        if request.headers['Authorization'] == 'Bearer tok1':
+            return httpx.Response(401, json={'error': {'code': 401}})
+        return ok({'id': 'd1', 'message': {'id': 'm9', 'threadId': 't9'}})
+
+    client, requests, _ = make_client(handler, credentials=COMPOSE_CREDS)
+    out = client.create_draft({'raw': 'abc', 'threadId': 't9'})
+    assert out['id'] == 'd1'
+    draft_reqs = [r for r in requests if r.url.path == '/gmail/v1/users/me/drafts']
+    assert len(draft_reqs) == 2
+    assert all(r.method == 'POST' for r in draft_reqs)
+    assert json.loads(draft_reqs[-1].content) == {'message': {'raw': 'abc', 'threadId': 't9'}}
+    assert state['tokens'] == 2
+
+
+def test_create_draft_validates_message_shape():
+    client, requests, _ = make_client(lambda r: ok({}), credentials=COMPOSE_CREDS)
+    for bad in (None, 'x', {}, {'raw': 5}):
+        with pytest.raises(GmailError) as exc:
+            client.create_draft(bad)
+        assert exc.value.code == 'invalid_input'
+    assert requests == []
+
+
+def test_client_never_sends():
+    import inspect
+
+    import john_agent.gmail_client as module
+
+    assert [n for n in dir(GmailClient) if 'send' in n.lower()] == []
+    source = inspect.getsource(module)
+    assert '/send' not in source
+    assert 'messages.send' not in source
+    assert 'drafts.send' not in source
 
 
 def test_close_idempotent():

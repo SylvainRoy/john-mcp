@@ -12,6 +12,9 @@
   },
   "gmail": {
     "enabled": false,
+    "drafts": false,
+    "attachment_roots": [],
+    "source_root": null,
     "credentials": {
       "client_id": null,
       "client_secret": null,

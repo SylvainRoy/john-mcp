@@ -19,6 +19,7 @@ from john_agent.config import (
     update_config,
 )
 from john_agent.gmail_client import (
+    GMAIL_COMPOSE_SCOPE,
     GMAIL_ENV,
     GMAIL_SCOPE,
     TOKEN_URL,
@@ -97,7 +98,13 @@ def main() -> None:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--output', type=Path)
     group.add_argument('--config', type=Path)
+    parser.add_argument('--drafts', action='store_true',
+                        help='Also authorize the Gmail compose scope so the optional '
+                             'draft tools can create drafts; drafts are never sent.')
     args = parser.parse_args()
+
+    scopes = [GMAIL_SCOPE, GMAIL_COMPOSE_SCOPE] if args.drafts else [GMAIL_SCOPE]
+    required = set(scopes)
 
     _quiet_library_loggers()
     output: Path | None = args.output
@@ -146,7 +153,7 @@ def main() -> None:
             {'installed': {'client_id': client_id, 'client_secret': client_secret,
                            'auth_uri': 'https://accounts.google.com/o/oauth2/auth',
                            'token_uri': TOKEN_URL, 'redirect_uris': ['http://localhost']}},
-            scopes=[GMAIL_SCOPE], autogenerate_code_verifier=True,
+            scopes=scopes, autogenerate_code_verifier=True,
         )
         credentials = flow.run_local_server(
             host='127.0.0.1', port=0, timeout_seconds=300,
@@ -160,7 +167,7 @@ def main() -> None:
         if (
             not isinstance(refresh_token, str) or not refresh_token
             or len(refresh_token.encode('utf-8')) > _MAX_FIELD
-            or requested != {GMAIL_SCOPE} or granted != {GMAIL_SCOPE}
+            or requested != required or granted != required
         ):
             fail()
         payload = {
@@ -168,7 +175,7 @@ def main() -> None:
             'client_id': client_id,
             'client_secret': client_secret,
             'refresh_token': refresh_token,
-            'scopes': [GMAIL_SCOPE],
+            'scopes': scopes,
         }
         if len(json.dumps(payload).encode('utf-8')) > _MAX_JSON:
             fail()

@@ -491,3 +491,62 @@ def test_help_works_without_credentials():
     )
     assert proc.returncode == 0
     assert "--markdown-root" in proc.stdout
+
+
+def test_draft_tools_only_with_drafter(reader):
+    class FakeDrafter:
+        def __init__(self):
+            self.closed = False
+
+        def create_draft(self, to, subject, body, **kwargs):
+            return {'draft_id': 'd1', 'message_id': 'm9', 'thread_id': None,
+                    'gmail_link': 'https://mail.google.com/mail/u/0/#drafts',
+                    'status': 'NOT sent. Review and send manually in Gmail.'}
+
+        def create_reply_draft(self, message_id, body, **kwargs):
+            return {'draft_id': 'd2', 'message_id': 'm8', 'thread_id': 't1',
+                    'gmail_link': 'https://mail.google.com/mail/u/0/#drafts',
+                    'status': 'NOT sent. Review and send manually in Gmail.'}
+
+        def close(self):
+            self.closed = True
+
+    async def go():
+        async with create_connected_server_and_client_session(
+            create_server(reader, gmail_drafter=FakeDrafter())
+        ) as session:
+            initialized = await session.initialize()
+            tools = (await session.list_tools()).tools
+            names = {t.name for t in tools}
+            assert {'create_draft', 'create_reply_draft'} <= names
+            assert 'search_emails' not in names
+            for t in tools:
+                if t.name in {'create_draft', 'create_reply_draft'}:
+                    assert t.annotations.readOnlyHint is False
+                    assert t.annotations.destructiveHint is False
+                    assert t.annotations.idempotentHint is False
+                    assert t.annotations.openWorldHint is True
+                    assert 'NEVER sent' in t.description
+            assert 'NEVER sent' in initialized.instructions
+            res = await session.call_tool(
+                'create_draft', {'to': 'a@b.c', 'subject': 's', 'body': 'b'})
+            assert res.isError is not True
+            assert res.structuredContent['draft_id'] == 'd1'
+            reply = await session.call_tool(
+                'create_reply_draft', {'message_id': 'm1', 'body': 'b'})
+            assert reply.structuredContent['draft_id'] == 'd2'
+
+    run(go())
+
+
+def test_drafts_absent_without_drafter(reader):
+    async def go():
+        async with create_connected_server_and_client_session(
+            create_server(reader)
+        ) as session:
+            initialized = await session.initialize()
+            names = {t.name for t in (await session.list_tools()).tools}
+            assert 'create_draft' not in names
+            assert 'NEVER sent' not in initialized.instructions
+
+    run(go())

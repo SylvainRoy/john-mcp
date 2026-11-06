@@ -29,6 +29,9 @@ full schema:
   },
   "gmail": {
     "enabled": false,
+    "drafts": false,
+    "attachment_roots": [],
+    "source_root": null,
     "credentials": {
       "client_id": null,
       "client_secret": null,
@@ -64,6 +67,7 @@ truthiness, decides:
 
 1. Explicit CLI flag (`--collection`, `--embedding`, `--gemini-model`,
    `--gemini-api-key`, `--gmail`/`--no-gmail`, `--gmail-credentials`,
+   `--gmail-drafts`/`--no-gmail-drafts`, `--attachment-root`, `--source-root`,
    `--markdown-root`, `--chroma-path`/`--no-chroma-path`).
 2. The selected configuration file: structured settings or its `env` map.
 3. The inherited process environment.
@@ -86,9 +90,16 @@ means "no key" and blocks inheritance.
 | gemini_api_key | embedding.api_key | GEMINI_API_KEY, GOOGLE_API_KEY | null |
 | gmail | gmail.enabled | JOHN_GMAIL | false |
 | gmail_credentials | gmail.credentials | JOHN_GMAIL_CREDENTIALS | null |
+| gmail_drafts | gmail.drafts | JOHN_GMAIL_DRAFTS | false |
+| gmail_attachment_roots | gmail.attachment_roots | JOHN_GMAIL_ATTACHMENT_ROOTS | [] |
+| gmail_source_root | gmail.source_root | JOHN_GMAIL_SOURCE_ROOT | null |
 
 Booleans accept true/false/1/0/yes/no/on/off (case-insensitive) from `env` or
-the inherited environment; JSON `gmail.enabled` must be a real boolean.
+the inherited environment; JSON `gmail.enabled` and `gmail.drafts` must be real
+booleans. `gmail.drafts` requires `gmail.enabled`. `gmail.attachment_roots` is a
+JSON list of paths; its environment form is joined with the OS path separator
+(`:` on POSIX). `gmail.source_root` enables manifest `document_id` attachments
+for the draft tools.
 
 Relative paths in the file (including `env` path values) resolve against the
 config directory; CLI and inherited-environment paths resolve against the
@@ -109,8 +120,9 @@ uv run --frozen john-mcp --config /absolute/path/to/john-mcp.json --check-config
 ```
 
 `--check-config` performs local checks only: it parses and resolves the file,
-validates Gmail credentials when `gmail.enabled` is set, and requires a Gemini
-API key when a Chroma index is configured with the Gemini provider. It does not
+validates Gmail credentials when `gmail.enabled` is set, requires the Gmail
+compose scope in those credentials when `gmail.drafts` is set, and requires a
+Gemini API key when a Chroma index is configured with the Gemini provider. It does not
 construct readers or embedding clients, apply `env`, contact Google, or check
 that corpus/index paths exist.
 
@@ -144,6 +156,27 @@ still creates a standalone credential file. Its JSON can be supplied through
 
 External OAuth apps in Testing mode issue Gmail refresh tokens that expire
 after seven days; rerun the helper when reauthorization is needed.
+
+### Draft tools
+
+`gmail.drafts` registers `create_draft` and `create_reply_draft` in addition to
+the read-only Gmail tools. Drafts are created in the authorized mailbox but are
+never sent; the user reviews and sends them manually in Gmail. Credentials for
+draft mode must include the Gmail compose scope: rerun
+
+```sh
+uv run --frozen john-gmail-auth --config /absolute/path/to/john-mcp.json --drafts
+```
+
+to reauthorize with both scopes, then set `gmail.drafts` to `true` and restart.
+`--check-config` fails when drafts are enabled with read-only credentials.
+
+`attachments` arguments are relative paths resolved inside
+`gmail.attachment_roots` only; `document_attachments` are manifest
+`document_id`s resolved inside `gmail.source_root`. Absolute paths, `..`
+segments, symlinks escaping the roots, directories, Google Drive stubs, and
+unknown document ids are rejected, and total attachment size is capped at
+25 MiB.
 
 ## Startup laziness
 

@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from john_agent import gmail_auth
-from john_agent.gmail_client import GMAIL_ENV, GMAIL_SCOPE
+from john_agent.gmail_client import GMAIL_COMPOSE_SCOPE, GMAIL_ENV, GMAIL_SCOPE
 
 
 class FakeCredentials:
@@ -453,3 +453,45 @@ def test_help_works_offline():
     )
     assert proc.returncode == 0
     assert '--output' in proc.stdout
+    assert 'never sent' in proc.stdout
+
+
+class DraftFlow(FakeFlow):
+    def run_local_server(self, **kwargs):
+        self.kwargs = kwargs
+        return FakeCredentials(scopes=[GMAIL_SCOPE, GMAIL_COMPOSE_SCOPE])
+
+
+def test_drafts_flag_requests_and_saves_both_scopes(tmp_path, monkeypatch):
+    out = tmp_path / 'creds.json'
+    code = run_main(monkeypatch,
+                    ['john-gmail-auth', '--output', str(out), '--drafts'],
+                    tmp_path, flow=DraftFlow)
+    assert code == 0
+    assert DraftFlow.last_scopes == [GMAIL_SCOPE, GMAIL_COMPOSE_SCOPE]
+    data = json.loads(out.read_text())
+    assert data['scopes'] == [GMAIL_SCOPE, GMAIL_COMPOSE_SCOPE]
+
+
+def test_drafts_flag_rejects_readonly_grant(tmp_path, monkeypatch):
+    out = tmp_path / 'creds.json'
+    code = run_main(monkeypatch,
+                    ['john-gmail-auth', '--output', str(out), '--drafts'],
+                    tmp_path, flow=FakeFlow)
+    assert code != 0
+    assert not out.exists()
+
+
+def test_drafts_config_flow_saves_compose_scopes(tmp_path, monkeypatch):
+    data = dict(AUTH_BASE)
+    data['gmail'] = {'enabled': True, 'drafts': True, 'credentials': {
+        'client_id': 'cid', 'client_secret': 'csec', 'refresh_token': None}}
+    cfg = _write_auth_config(tmp_path, data)
+    monkeypatch.setattr(sys, 'argv',
+                        ['john-gmail-auth', '--config', str(cfg), '--drafts'])
+    monkeypatch.setattr(gmail_auth, 'InstalledAppFlow', DraftFlow)
+    monkeypatch.setattr(sys.stdin, 'isatty', lambda: True)
+    gmail_auth.main()
+    saved = json.loads(cfg.read_text())
+    assert saved['gmail']['credentials']['scopes'] == [
+        GMAIL_SCOPE, GMAIL_COMPOSE_SCOPE]

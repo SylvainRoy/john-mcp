@@ -14,13 +14,18 @@ from urllib.parse import quote
 import httpx
 
 GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly'
+GMAIL_COMPOSE_SCOPE = 'https://www.googleapis.com/auth/gmail.compose'
+ALLOWED_SCOPE_SETS = frozenset({
+    frozenset({GMAIL_SCOPE}),
+    frozenset({GMAIL_SCOPE, GMAIL_COMPOSE_SCOPE}),
+})
 GMAIL_ENV = 'JOHN_GMAIL_CREDENTIALS'
 TOKEN_URL = 'https://oauth2.googleapis.com/token'
 API_ROOT = 'https://gmail.googleapis.com/gmail/v1/users/me'
 
 ERROR_MESSAGES = {
     'not_configured': 'Configure gmail.credentials or JOHN_GMAIL_CREDENTIALS after running john-gmail-auth.',
-    'invalid_credentials': 'Gmail credentials must be authorized-user JSON with only the Gmail read-only scope.',
+    'invalid_credentials': 'Gmail credentials must be authorized-user JSON with only the Gmail read-only scope, or read-only plus compose for drafts.',
     'authorization_required': 'Gmail authorization is missing, expired, or revoked; run the separate OAuth setup again.',
     'permission_denied': 'Gmail read-only access was not granted or is not available.',
     'rate_limited': 'Gmail temporarily limited requests; try again later.',
@@ -34,6 +39,8 @@ ERROR_MESSAGES = {
     'password_required': 'The PDF is encrypted; password-protected PDFs are not supported.',
     'no_extractable_text': 'The PDF has no extractable text; OCR is not enabled.',
     'extraction_timeout': 'PDF text extraction exceeded its time limit.',
+    'drafts_disabled': 'Draft tools require credentials authorized with the Gmail compose scope; rerun john-gmail-auth --drafts.',
+    'attachment_rejected': 'Attachments must be regular files inside a configured attachment root or source root.',
 }
 
 _MESSAGE_ID_RE = re.compile(r'[A-Za-z0-9_-]{1,256}\Z')
@@ -102,8 +109,10 @@ def validate_credentials(value: Any) -> dict[str, str]:
             raise GmailError('invalid_credentials') from None
         fields[key] = field_value
     scopes = parsed.get('scopes')
-    if not isinstance(scopes, list) or scopes != [GMAIL_SCOPE]:
+    if not isinstance(scopes, list) or not all(isinstance(s, str) for s in scopes) \
+            or frozenset(scopes) not in ALLOWED_SCOPE_SETS:
         raise GmailError('invalid_credentials')
+    fields['scopes'] = frozenset(scopes)
     return fields
 
 
@@ -139,6 +148,10 @@ class GmailClient:
             return self._load_credentials()
         return self._credentials
 
+    @property
+    def scopes(self) -> frozenset:
+        return self._get_credentials()['scopes']
+
     def _refresh(self, *, force: bool = False) -> str:
         with self._lock:
             now = self._clock()
@@ -158,7 +171,7 @@ class GmailClient:
                 raise GmailError('invalid_response')
             scope = payload.get('scope')
             if scope is not None:
-                if not isinstance(scope, str) or set(scope.split()) != {GMAIL_SCOPE}:
+                if not isinstance(scope, str) or set(scope.split()) != creds['scopes']:
                     raise GmailError('invalid_response')
             self._access_token = token
             self._token_expiry = self._clock() + expires - _TOKEN_MARGIN
@@ -181,7 +194,8 @@ class GmailClient:
         return parsed
 
     def _perform_json(self, method: str, url: str, *, cap: int,
-                      params=None, data=None, headers=None, token_request: bool = False) -> dict[str, Any]:
+                      params=None, data=None, json=None, headers=None,
+                      token_request: bool = False) -> dict[str, Any]:
         attempts = 0
         while attempts < _MAX_ATTEMPTS:
             attempts += 1
@@ -189,7 +203,7 @@ class GmailClient:
             retry_after = None
             try:
                 with self._client().stream(
-                    method, url, params=params, data=data, headers=headers,
+                    method, url, params=params, data=data, json=json, headers=headers,
                     follow_redirects=False, timeout=10.0,
                 ) as response:
                     status = response.status_code
@@ -238,20 +252,27 @@ class GmailClient:
                 self._sleep(delay)
         raise GmailError('unavailable')
 
-    def _request_json(self, path: str, params: list[tuple[str, str]], cap: int) -> dict[str, Any]:
+    def _request_json(self, path: str, params: list[tuple[str, str]], cap: int,
+                      method: str = 'GET', json=None) -> dict[str, Any]:
         token = self._refresh()
         try:
-            return self._perform_json('GET', API_ROOT + path, cap=cap, params=params,
-                                      headers={'Authorization': f'Bearer {token}'})
+            return self._perform_json(method, API_ROOT + path, cap=cap, params=params,
+                                      json=json, headers={'Authorization': f'Bearer {token}'})
         except GmailError as exc:
             if exc.code != 'authorization_required':
                 raise
         token = self._refresh(force=True)
-        return self._perform_json('GET', API_ROOT + path, cap=cap, params=params,
-                                  headers={'Authorization': f'Bearer {token}'})
+        return self._perform_json(method, API_ROOT + path, cap=cap, params=params,
+                                  json=json, headers={'Authorization': f'Bearer {token}'})
 
     def get_profile(self) -> dict[str, Any]:
         return self._request_json('/profile', [], _SMALL_CAP)
+
+    def create_draft(self, message: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(message, dict) or not isinstance(message.get('raw'), str):
+            raise GmailError('invalid_input')
+        return self._request_json('/drafts', [], _SMALL_CAP,
+                                  method='POST', json={'message': message})
 
     def list_messages(self, query: str, limit: int, page_token: str | None, include_spam_trash: bool) -> dict[str, Any]:
         params = [

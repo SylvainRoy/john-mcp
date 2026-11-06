@@ -12,7 +12,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
-from john_agent.gmail_client import GMAIL_ENV, GMAIL_SCOPE, GmailError, validate_credentials
+from john_agent.gmail_client import (
+    ALLOWED_SCOPE_SETS,
+    GMAIL_COMPOSE_SCOPE,
+    GMAIL_ENV,
+    GMAIL_SCOPE,
+    GmailError,
+    validate_credentials,
+)
 
 _MAX_CONFIG_BYTES = 1024 * 1024
 _MAX_CRED_FIELD = 16 * 1024
@@ -28,6 +35,10 @@ _SPECS = {
     'gemini_api_key': ('embedding', 'api_key', ('GEMINI_API_KEY', 'GOOGLE_API_KEY'), None),
     'gmail': ('gmail', 'enabled', ('JOHN_GMAIL',), False),
     'gmail_credentials': ('gmail', 'credentials', ('JOHN_GMAIL_CREDENTIALS',), None),
+    'gmail_drafts': ('gmail', 'drafts', ('JOHN_GMAIL_DRAFTS',), False),
+    'gmail_attachment_roots': ('gmail', 'attachment_roots',
+                               ('JOHN_GMAIL_ATTACHMENT_ROOTS',), []),
+    'gmail_source_root': ('gmail', 'source_root', ('JOHN_GMAIL_SOURCE_ROOT',), None),
 }
 
 CONFIG_TEMPLATE = {
@@ -35,7 +46,8 @@ CONFIG_TEMPLATE = {
     'corpus': {'markdown_root': '/absolute/path/to/markdown', 'chroma_path': None,
                'collection': 'documents'},
     'embedding': {'provider': 'gemini', 'model': 'gemini-embedding-001', 'api_key': None},
-    'gmail': {'enabled': False, 'credentials': {
+    'gmail': {'enabled': False, 'drafts': False, 'attachment_roots': [],
+              'source_root': None, 'credentials': {
         'client_id': None, 'client_secret': None, 'refresh_token': None}},
     'env': {},
 }
@@ -43,7 +55,7 @@ CONFIG_TEMPLATE = {
 _SECTION_KEYS = {
     'corpus': {'markdown_root', 'chroma_path', 'collection'},
     'embedding': {'provider', 'model', 'api_key'},
-    'gmail': {'enabled', 'credentials'},
+    'gmail': {'enabled', 'credentials', 'drafts', 'attachment_roots', 'source_root'},
 }
 _CRED_FIELDS = ('client_id', 'client_secret', 'refresh_token')
 _CRED_ALLOWED = set(_CRED_FIELDS) | {'type', 'scopes'}
@@ -80,6 +92,9 @@ class Settings:
     gmail: bool
     gmail_credentials: dict[str, Any] | str | None = field(repr=False)
     env: dict[str, str] = field(repr=False)
+    gmail_drafts: bool = False
+    gmail_attachment_roots: list[Path] = field(default_factory=list)
+    gmail_source_root: Path | None = None
 
 
 def _reject_constant(value: str) -> None:
@@ -122,8 +137,14 @@ def _validate_credentials_schema(creds: Any) -> None:
                 raise ConfigError('gmail.credentials fields exceed the supported size.')
     if 'type' in creds and creds['type'] != 'authorized_user':
         raise ConfigError('gmail.credentials type must be authorized_user.')
-    if 'scopes' in creds and creds['scopes'] != [GMAIL_SCOPE]:
-        raise ConfigError('gmail.credentials scopes must be the Gmail read-only scope.')
+    if 'scopes' in creds:
+        scopes = creds['scopes']
+        if not isinstance(scopes, list) \
+                or not all(isinstance(s, str) for s in scopes) \
+                or frozenset(scopes) not in ALLOWED_SCOPE_SETS:
+            raise ConfigError(
+                'gmail.credentials scopes must be the Gmail read-only scope, '
+                'optionally with the compose scope for drafts.')
 
 
 def _validate_schema(data: dict[str, Any]) -> None:
@@ -155,6 +176,16 @@ def _validate_schema(data: dict[str, Any]) -> None:
     gmail = data.get('gmail') or {}
     if 'enabled' in gmail and not isinstance(gmail['enabled'], bool):
         raise ConfigError('gmail.enabled must be a boolean.')
+    if 'drafts' in gmail and not isinstance(gmail['drafts'], bool):
+        raise ConfigError('gmail.drafts must be a boolean.')
+    if 'attachment_roots' in gmail and gmail['attachment_roots'] is not None:
+        roots = gmail['attachment_roots']
+        if not isinstance(roots, list):
+            raise ConfigError('gmail.attachment_roots must be a list of paths or null.')
+        for root in roots:
+            _nonempty_string('gmail.attachment_roots', root)
+    if 'source_root' in gmail and gmail['source_root'] is not None:
+        _nonempty_string('gmail.source_root', gmail['source_root'])
     if 'credentials' in gmail:
         _validate_credentials_schema(gmail['credentials'])
     if 'env' in data and not isinstance(data['env'], dict):
@@ -283,14 +314,29 @@ def _normalize_credentials(value: Any) -> dict[str, Any] | str | None:
     if value is None or isinstance(value, str):
         return value
     if isinstance(value, dict):
+        declared = value.get('scopes')
+        scopes = sorted(declared) if isinstance(declared, list) and declared else [GMAIL_SCOPE]
         return {
             'type': 'authorized_user',
-            'scopes': [GMAIL_SCOPE],
+            'scopes': scopes,
             'client_id': value.get('client_id'),
             'client_secret': value.get('client_secret'),
             'refresh_token': value.get('refresh_token'),
         }
     raise ConfigError('gmail.credentials must be an object, string, or null.')
+
+
+def _to_path_list(name: str, value: Any, from_file: bool,
+                  config_dir: Path | None) -> list[Path]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        if '\x00' in value:
+            raise ConfigError(f'{name} must not contain NUL.')
+        value = [item for item in value.split(os.pathsep) if item]
+    if not isinstance(value, (list, tuple)):
+        raise ConfigError(f'{name} must be a path list or a {os.pathsep}-joined string.')
+    return [_to_path(name, item, from_file, config_dir) for item in value]
 
 
 def resolve_settings(overrides: Mapping[str, Any], config: ConfigFile | None = None,
@@ -333,6 +379,12 @@ def resolve_settings(overrides: Mapping[str, Any], config: ConfigFile | None = N
     if embedding not in ('gemini', 'default'):
         raise ConfigError('embedding must be gemini or default.')
     chroma_raw = get('chroma_path')
+    gmail = _to_bool('gmail', get('gmail')[0])
+    gmail_drafts = _to_bool('gmail_drafts', get('gmail_drafts')[0])
+    if gmail_drafts and not gmail:
+        raise ConfigError('gmail.drafts requires gmail.enabled.')
+    roots_raw = get('gmail_attachment_roots')
+    source_raw = get('gmail_source_root')
     return Settings(
         markdown_root=_to_path('markdown_root', markdown_root[0], markdown_root[1], config_dir),
         chroma_path=None if chroma_raw[0] is None else _to_path(
@@ -341,8 +393,13 @@ def resolve_settings(overrides: Mapping[str, Any], config: ConfigFile | None = N
         embedding=embedding,
         gemini_model=_nonempty_string('gemini_model', get('gemini_model')[0]),
         gemini_api_key=gemini_api_key,
-        gmail=_to_bool('gmail', get('gmail')[0]),
+        gmail=gmail,
         gmail_credentials=_normalize_credentials(get('gmail_credentials')[0]),
+        gmail_drafts=gmail_drafts,
+        gmail_attachment_roots=_to_path_list(
+            'gmail_attachment_roots', roots_raw[0], roots_raw[1], config_dir),
+        gmail_source_root=None if source_raw[0] is None else _to_path(
+            'gmail_source_root', source_raw[0], source_raw[1], config_dir),
         env=dict(file_env),
     )
 
@@ -353,9 +410,13 @@ def check_settings(settings: Settings) -> None:
         raise ConfigError('A Gemini API key is required when Chroma is configured.')
     if settings.gmail:
         try:
-            validate_credentials(settings.gmail_credentials)
+            credentials = validate_credentials(settings.gmail_credentials)
         except GmailError as exc:
             raise ConfigError(str(exc)) from None
+        if settings.gmail_drafts and GMAIL_COMPOSE_SCOPE not in credentials['scopes']:
+            raise ConfigError(
+                'gmail.drafts requires credentials authorized with the Gmail '
+                'compose scope; rerun john-gmail-auth --drafts.')
 
 
 def init_config(path: Path) -> None:
