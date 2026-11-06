@@ -15,6 +15,7 @@ dependencies = [
 [project.scripts]
 john-mcp = "john_agent.server:main"
 john-gmail-auth = "john_agent.gmail_auth:main"
+john-google-auth = "john_agent.gmail_auth:main"
 
 [build-system]
 requires = ["hatchling>=1.27,<2"]

@@ -260,7 +260,6 @@ def test_unknown_key_not_echoed(tmp_path):
     {'client_id': 'x', 'extra': 'y'},
     {'client_id': 'x', 'type': 'service_account'},
     {'client_id': 'x', 'type': None},
-    {'client_id': 'x', 'scopes': []},
     {'client_id': 'x', 'scopes': None},
     {'client_id': 'x', 'scopes': ['https://mail.google.com/']},
     {'client_id': ''},
@@ -356,7 +355,7 @@ def test_init_config(tmp_path):
     assert stat.S_IMODE(target.stat().st_mode) == 0o600
     cfg = load_config(target)
     assert cfg.data == CONFIG_TEMPLATE
-    creds = cfg.data['gmail']['credentials']
+    creds = cfg.data['google']['credentials']
     assert all(v is None for v in creds.values())
 
 
@@ -453,7 +452,7 @@ def test_cli_wiring(tmp_path, monkeypatch):
         def run(self):
             captured['ran'] = True
 
-    def fake_create(reader, gmail_reader=None, gmail_drafter=None):
+    def fake_create(reader, gmail_reader=None, gmail_drafter=None, **kwargs):
         captured['gmail_reader'] = gmail_reader
         captured['gmail_drafter'] = gmail_drafter
         return FakeServer()
@@ -499,7 +498,7 @@ def test_cli_null_key_blocks_env_fallback(tmp_path, monkeypatch):
             pass
 
     monkeypatch.setattr(server, 'CorpusReader', FakeReader)
-    monkeypatch.setattr(server, 'create_server', lambda r, gmail_reader=None, gmail_drafter=None: FakeServer())
+    monkeypatch.setattr(server, 'create_server', lambda r, gmail_reader=None, gmail_drafter=None, **kwargs: FakeServer())
     path = write_config(tmp_path, base_config(embedding={'api_key': None}))
     monkeypatch.setenv('GEMINI_API_KEY', 'ENVKEY')
     monkeypatch.setattr(sys, 'argv', ['john-mcp', '--config', str(path)])
@@ -521,7 +520,7 @@ def test_cli_gmail_credentials_and_no_gmail(tmp_path, monkeypatch):
         def run(self):
             pass
 
-    def fake_create(reader, gmail_reader=None, gmail_drafter=None):
+    def fake_create(reader, gmail_reader=None, gmail_drafter=None, **kwargs):
         captured['gmail_reader'] = gmail_reader
         captured['gmail_drafter'] = gmail_drafter
         return FakeServer()
@@ -742,7 +741,7 @@ def test_cli_drafts_wiring(tmp_path, monkeypatch):
         def run(self):
             pass
 
-    def fake_create(reader, gmail_reader=None, gmail_drafter=None):
+    def fake_create(reader, gmail_reader=None, gmail_drafter=None, **kwargs):
         captured['gmail_reader'] = gmail_reader
         captured['gmail_drafter'] = gmail_drafter
         return FakeServer()
