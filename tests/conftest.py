@@ -19,6 +19,8 @@ def _no_api_keys(monkeypatch):
         "JOHN_GOOGLE_CREDENTIALS",
         "JOHN_CALENDAR",
         "JOHN_CALENDAR_WRITE",
+        "JOHN_CONTACTS",
+        "JOHN_CONTACTS_WRITE",
         "JOHN_GMAIL_DRAFTS",
         "JOHN_GMAIL_ATTACHMENT_ROOTS",
         "JOHN_GMAIL_SOURCE_ROOT",

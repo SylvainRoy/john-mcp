@@ -23,6 +23,9 @@ from john_agent.gmail_client import (
     GMAIL_COMPOSE_SCOPE,
     CALENDAR_SCOPE,
     CALENDAR_EVENTS_SCOPE,
+    CONTACTS_SCOPE,
+    OTHER_CONTACTS_SCOPE,
+    CONTACTS_WRITE_SCOPE,
     GMAIL_ENV,
     GMAIL_SCOPE,
     TOKEN_URL,
@@ -33,7 +36,7 @@ _SUCCESS = (
     'environment variable through your launcher or secret manager.'
 )
 _SUCCESS_CONFIG = (
-    'Authorization saved to the configuration. Enable the desired Gmail/Calendar tools and restart the '
+    'Authorization saved to the configuration. Enable the desired Gmail/Calendar/Contacts tools and restart the '
     'MCP server to use it.'
 )
 _FAILURE = 'Gmail authorization setup failed; check inputs and try again.'
@@ -95,7 +98,7 @@ def _configured_client(config_file, which: str) -> str | None:
 def main() -> None:
     parser = SafeArgumentParser(
         prog=Path(sys.argv[0]).name,
-        description='Interactive shared Google OAuth setup for optional Gmail and Calendar tools.',
+        description='Interactive shared Google OAuth setup for optional Gmail, Calendar and Contacts tools.',
     )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--output', type=Path)
@@ -105,16 +108,22 @@ def main() -> None:
                              'draft tools can create drafts; drafts are never sent.')
     parser.add_argument('--calendar', action='store_true', help='Authorize Calendar read-only access.')
     parser.add_argument('--calendar-write', action='store_true', help='Authorize Calendar read and event writes without guest notifications.')
-    parser.add_argument('--no-gmail', action='store_true', help='Omit Gmail scopes; requires a Calendar flag.')
+    parser.add_argument('--contacts', action='store_true', help='Authorize read-only contacts and other contacts.')
+    parser.add_argument('--contacts-write', action='store_true', help='Also authorize contact creation and updates; never deletion.')
+    parser.add_argument('--no-gmail', action='store_true', help='Omit Gmail scopes; requires a Calendar or Contacts flag.')
     args = parser.parse_args()
 
-    if args.no_gmail and (not (args.calendar or args.calendar_write) or args.drafts):
-        parser.error('--no-gmail requires Calendar and cannot be used with --drafts.')
+    if args.no_gmail and (not (args.calendar or args.calendar_write or args.contacts or args.contacts_write) or args.drafts):
+        parser.error('--no-gmail requires Calendar or Contacts and cannot be used with --drafts.')
     scopes = [] if args.no_gmail else ([GMAIL_SCOPE, GMAIL_COMPOSE_SCOPE] if args.drafts else [GMAIL_SCOPE])
     if args.calendar or args.calendar_write:
         scopes.append(CALENDAR_SCOPE)
     if args.calendar_write:
         scopes.append(CALENDAR_EVENTS_SCOPE)
+    if args.contacts or args.contacts_write:
+        scopes.extend([CONTACTS_SCOPE, OTHER_CONTACTS_SCOPE])
+    if args.contacts_write:
+        scopes.append(CONTACTS_WRITE_SCOPE)
     required = set(scopes)
 
     _quiet_library_loggers()
