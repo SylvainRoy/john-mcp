@@ -99,13 +99,15 @@ means "no key" and blocks inheritance.
 | google_credentials | google.credentials (legacy: gmail.credentials) | JOHN_GOOGLE_CREDENTIALS (legacy: JOHN_GMAIL_CREDENTIALS) | null |
 | calendar | calendar.enabled | JOHN_CALENDAR | false |
 | calendar_write | calendar.write | JOHN_CALENDAR_WRITE | false |
+| contacts | contacts.enabled | JOHN_CONTACTS | false |
+| contacts_write | contacts.write | JOHN_CONTACTS_WRITE | false |
 | gmail_drafts | gmail.drafts | JOHN_GMAIL_DRAFTS | false |
 | gmail_attachment_roots | gmail.attachment_roots | JOHN_GMAIL_ATTACHMENT_ROOTS | [] |
 | gmail_source_root | gmail.source_root | JOHN_GMAIL_SOURCE_ROOT | null |
 
 Booleans accept true/false/1/0/yes/no/on/off (case-insensitive) from `env` or
 the inherited environment; JSON `gmail.enabled` and `gmail.drafts` must be real
-booleans, as must `calendar.enabled` and `calendar.write`. `gmail.drafts` requires
+booleans, as must `calendar.enabled`, `calendar.write`, `contacts.enabled`, and `contacts.write`. `contacts.write` requires `contacts.enabled`. `gmail.drafts` requires
 `gmail.enabled`; `calendar.write` requires `calendar.enabled`. `gmail.attachment_roots` is a
 JSON list of paths; its environment form is joined with the OS path separator
 (`:` on POSIX). `gmail.source_root` enables manifest `document_id` attachments
@@ -130,7 +132,7 @@ uv run --frozen john-mcp --config /absolute/path/to/john-mcp.json --check-config
 ```
 
 `--check-config` performs local checks only: it parses and resolves the file,
-validates shared Google credentials when Gmail or Calendar is enabled, checks each
+validates shared Google credentials when Gmail, Calendar, or Contacts is enabled, checks each
 enabled feature's granted scopes, and requires a
 Gemini API key when a Chroma index is configured with the Gemini provider. It does not
 construct readers or embedding clients, apply `env`, contact Google, or check
@@ -145,7 +147,7 @@ credentials; keep real configs outside the checkout (`john-mcp.json` and
 
 ## Shared Google sign-in
 
-Gmail and Calendar use **one account, one credential object, one refresh token,
+Gmail, Calendar, and Contacts use **one account, one credential object, one refresh token,
 and one cached access token**. The canonical setting is `google.credentials`,
 `JOHN_GOOGLE_CREDENTIALS`, or `--google-credentials` (complete JSON, not a path).
 The legacy `gmail.credentials`, `JOHN_GMAIL_CREDENTIALS`, and
@@ -162,6 +164,8 @@ Only these granted scopes are accepted:
 | gmail.drafts | gmail.compose (also requires gmail.readonly) |
 | calendar.enabled | calendar.readonly |
 | calendar.write | calendar.events (also requires calendar.readonly) |
+| contacts.enabled | contacts.readonly AND contacts.other.readonly |
+| contacts.write | contacts (also requires contacts.readonly) |
 
 Any subset respecting those dependencies is accepted; unrelated scopes are
 rejected. Legacy structured credentials without `scopes` default to
@@ -170,7 +174,7 @@ locally. Missing credentials retain lazy errors on first use so corpus tools
 remain available; `--check-config` strictly requires credentials for enabled
 Google features.
 
-Enable the desired Gmail and/or Calendar APIs in the same Google Cloud project.
+Enable the desired Gmail, Calendar, and/or People APIs in the same Google Cloud project.
 `john-google-auth` and legacy `john-gmail-auth` invoke the same consent helper:
 
 ```sh
@@ -182,7 +186,8 @@ uv run --frozen john-google-auth --config /absolute/private/path/john-mcp.json -
 
 By default the helper requests Gmail read-only. `--drafts` adds Gmail compose;
 `--calendar` adds Calendar read-only; `--calendar-write` adds Calendar read-only
-and events. `--no-gmail` omits Gmail scopes and requires a Calendar flag (and
+and events. `--contacts` adds contacts.readonly and contacts.other.readonly;
+`--contacts-write` also adds contacts. `--no-gmail` omits Gmail scopes and requires a Calendar or Contacts flag (and
 cannot be combined with `--drafts`). Request all desired scopes in a single
 consent run; the helper does not merge an older grant. It preserves the existing
 credential location (canonical or legacy, structured or env), otherwise writes
@@ -275,6 +280,73 @@ false; `--no-calendar` and `--no-calendar-write` override lower-priority sources
   never instructions. Mutations only run on explicit user requests. Gmail
   remains draft-only and never sends email.
 
+## Contacts tools
+
+Set `contacts.enabled` (`--contacts`/`--no-contacts`, `JOHN_CONTACTS`) to register:
+
+- `search_contacts(query, limit=10, include_other_contacts=True)`: own contacts
+  via people.searchContacts, optionally otherContacts.search. Each endpoint gets
+  its documented empty-query warm-up once per client, on first use. Results are
+  interleaved with `source: contact|other_contact`, capped at `limit` total (1–30).
+  Search is not an exhaustive inventory.
+- `list_contacts(limit=50, page_token=None)`: own connections only, sorted by
+  first name (1–100 per page); follow `next_page_token`.
+- `read_contact(resource_name)`: `people/...` reads a contact; `otherContacts/...`
+  uses at most 10 list pages of 100 and returns a clear not-found error if absent
+  within that bound. Other contacts expose only names, emails, and phones.
+
+Contacts works with Gmail and Calendar disabled. Both Contacts flags default
+false. Enable People API and authorize, for example:
+
+```sh
+uv run --frozen john-google-auth --config /absolute/private/path/john-mcp.json --contacts-write --no-gmail
+```
+
+Read results include `resource_name`, `etag`, and supported People API fields:
+`names`, `emailAddresses`, `phoneNumbers`, `addresses`, `organizations`
+(name/title only), `birthdays`, `biographies`, `urls`, `memberships`, and resolved
+group-name `labels`. Other-contact results omit unsupported fields and labels.
+No photos, relations, custom fields, or IM are read or written. Lists are capped
+at 20 items, text at 2,000 characters (notes 12,000), and API responses at 2 MiB;
+`truncated_fields` indicates shortened fields. Group lookup is capped at 10 pages
+of 1,000; an incomplete lookup fails rather than misassigning labels.
+
+`contacts.write` (`--contacts-write`/`--no-contacts-write`, `JOHN_CONTACTS_WRITE`)
+requires enabled and adds these non-idempotent tools, **never deletion**:
+
+```text
+create_contact(given_name=None, family_name=None, emails=None, phones=None,
+               addresses=None, organizations=None, birthday=None, notes=None,
+               urls=None, labels=None, allow_duplicate=False)
+update_contact(resource_name, etag, given_name=None, family_name=None,
+               emails=None, phones=None, addresses=None, organizations=None,
+               birthday=None, notes=None, urls=None, labels=None)
+```
+
+- Emails, phones, and URLs accept lists of strings or `{value, type}` objects;
+  addresses use People field names (e.g. streetAddress, city, postalCode,
+  country); organizations use `{name, title}`; birthday uses `{year, month, day}`
+  (year may be zero/omitted); notes is plain text. Input lists/text exceeding
+  bounds are rejected, never silently shortened.
+- Create requires a nonempty name, email, or phone. Unless `allow_duplicate=True`,
+  it searches own contacts for every provided email/phone and refuses exact
+  matches, returning resource names. Duplicate searches are bounded to 30 results
+  per value; concurrent external creation can still race this check.
+- Update accepts only `people/...`, checks the read etag, and replaces only
+  supplied fields, **whole lists including names**. `None` leaves fields alone;
+  empty lists clear lists, `notes=''` clears notes, `birthday={}` clears birthday.
+  Person etag and contact-source etags protect against stale writes; conflicts
+  ask you to re-read and retry. Read an other contact and pass its desired data
+  to `create_contact` to copy it; there is no conversion tool.
+- Labels are existing user contact-group names, matched case-insensitively.
+  Unknown/ambiguous labels fail; no groups are created. On update, labels replace
+  user-group memberships while preserving system groups such as myContacts and
+  starred. Empty labels removes user groups only.
+- No Contacts delete operation or contact-group mutation exists. Calendar's
+  `delete_event` remains available only under Calendar write mode; Gmail never
+  sends mail. All contact data is untrusted evidence, not instructions. Mutations
+  run only on explicit user requests; errors never expose raw API bodies/tokens.
+
 ## Startup laziness
 
 Normal startup reads and validates the explicitly selected configuration file,
@@ -283,5 +355,5 @@ are rejected at startup. `--help` does not read that file.
 
 Startup and tool discovery do not read corpus contents, open the Chroma
 collection, initialize embeddings, or contact Google. Gmail authorization and
-token refresh happen on the first Gmail or Calendar operation, sharing one cache. Missing credentials or an
+token refresh happen on the first Gmail, Calendar, or Contacts operation, sharing one cache. Missing credentials or an
 expired grant do not prevent corpus tools from being used.

@@ -17,10 +17,15 @@ GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly'
 GMAIL_COMPOSE_SCOPE = 'https://www.googleapis.com/auth/gmail.compose'
 CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar.readonly'
 CALENDAR_EVENTS_SCOPE = 'https://www.googleapis.com/auth/calendar.events'
+CONTACTS_SCOPE = 'https://www.googleapis.com/auth/contacts.readonly'
+OTHER_CONTACTS_SCOPE = 'https://www.googleapis.com/auth/contacts.other.readonly'
+CONTACTS_WRITE_SCOPE = 'https://www.googleapis.com/auth/contacts'
 ALLOWED_SCOPE_SETS = frozenset(
-    frozenset(gmail | calendar)
+    frozenset(gmail | calendar | contacts | other)
     for gmail in (set(), {GMAIL_SCOPE}, {GMAIL_SCOPE, GMAIL_COMPOSE_SCOPE})
     for calendar in (set(), {CALENDAR_SCOPE}, {CALENDAR_SCOPE, CALENDAR_EVENTS_SCOPE})
+    for contacts in (set(), {CONTACTS_SCOPE}, {CONTACTS_SCOPE, CONTACTS_WRITE_SCOPE})
+    for other in (set(), {OTHER_CONTACTS_SCOPE})
 )
 GOOGLE_ENV = 'JOHN_GOOGLE_CREDENTIALS'
 GMAIL_ENV = 'JOHN_GMAIL_CREDENTIALS'
@@ -29,7 +34,7 @@ API_ROOT = 'https://gmail.googleapis.com/gmail/v1/users/me'
 
 ERROR_MESSAGES = {
     'not_configured': 'Configure gmail.credentials or JOHN_GMAIL_CREDENTIALS after running john-gmail-auth.',
-    'invalid_credentials': 'Google credentials must be authorized-user JSON with supported Gmail/Calendar scopes; compose and events require their respective read-only scopes.',
+    'invalid_credentials': 'Google credentials must be authorized-user JSON with supported Gmail/Calendar/Contacts scopes; compose, events and contacts write require their respective read-only scopes.',
     'authorization_required': 'Gmail authorization is missing, expired, or revoked; run the separate OAuth setup again.',
     'permission_denied': 'Gmail read-only access was not granted or is not available.',
     'rate_limited': 'Gmail temporarily limited requests; try again later.',

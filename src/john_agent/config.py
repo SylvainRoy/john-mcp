@@ -16,6 +16,9 @@ from john_agent.gmail_client import (
     ALLOWED_SCOPE_SETS,
     CALENDAR_SCOPE,
     CALENDAR_EVENTS_SCOPE,
+    CONTACTS_SCOPE,
+    OTHER_CONTACTS_SCOPE,
+    CONTACTS_WRITE_SCOPE,
     GOOGLE_ENV,
     GMAIL_COMPOSE_SCOPE,
     GMAIL_ENV,
@@ -40,6 +43,8 @@ _SPECS = {
     'gmail_credentials': ('google', 'credentials', (GOOGLE_ENV, GMAIL_ENV), None),
     'calendar': ('calendar', 'enabled', ('JOHN_CALENDAR',), False),
     'calendar_write': ('calendar', 'write', ('JOHN_CALENDAR_WRITE',), False),
+    'contacts': ('contacts', 'enabled', ('JOHN_CONTACTS',), False),
+    'contacts_write': ('contacts', 'write', ('JOHN_CONTACTS_WRITE',), False),
     'gmail_drafts': ('gmail', 'drafts', ('JOHN_GMAIL_DRAFTS',), False),
     'gmail_attachment_roots': ('gmail', 'attachment_roots',
                                ('JOHN_GMAIL_ATTACHMENT_ROOTS',), []),
@@ -54,6 +59,7 @@ CONFIG_TEMPLATE = {
     'gmail': {'enabled': False, 'drafts': False, 'attachment_roots': [],
               'source_root': None},
     'calendar': {'enabled': False, 'write': False},
+    'contacts': {'enabled': False, 'write': False},
     'google': {'credentials': {
         'client_id': None, 'client_secret': None, 'refresh_token': None}},
     'env': {},
@@ -62,13 +68,14 @@ CONFIG_TEMPLATE = {
 _SECTION_KEYS = {
     'google': {'credentials'},
     'calendar': {'enabled', 'write'},
+    'contacts': {'enabled', 'write'},
     'corpus': {'markdown_root', 'chroma_path', 'collection'},
     'embedding': {'provider', 'model', 'api_key'},
     'gmail': {'enabled', 'credentials', 'drafts', 'attachment_roots', 'source_root'},
 }
 _CRED_FIELDS = ('client_id', 'client_secret', 'refresh_token')
 _CRED_ALLOWED = set(_CRED_FIELDS) | {'type', 'scopes'}
-_TOP_KEYS = {'version', 'corpus', 'embedding', 'gmail', 'google', 'calendar', 'env'}
+_TOP_KEYS = {'version', 'corpus', 'embedding', 'gmail', 'google', 'calendar', 'contacts', 'env'}
 _BOOL_TRUE = {'true', '1', 'yes', 'on'}
 _BOOL_FALSE = {'false', '0', 'no', 'off'}
 
@@ -106,6 +113,8 @@ class Settings:
     gmail_source_root: Path | None = None
     calendar: bool = False
     calendar_write: bool = False
+    contacts: bool = False
+    contacts_write: bool = False
 
     @property
     def google_credentials(self):
@@ -158,8 +167,8 @@ def _validate_credentials_schema(creds: Any) -> None:
                 or not all(isinstance(s, str) for s in scopes) \
                 or frozenset(scopes) not in ALLOWED_SCOPE_SETS:
             raise ConfigError(
-                'Google credentials scopes must use supported Gmail/Calendar scopes; '
-                'compose/events require their respective read-only scopes.')
+                'Google credentials scopes must use supported Gmail/Calendar/Contacts scopes; '
+                'compose/events/contacts write require their respective read-only scopes.')
 
 
 def credentials_location(data):
@@ -217,9 +226,10 @@ def _validate_schema(data: dict[str, Any]) -> None:
     google = data.get('google') or {}
     if 'credentials' in google:
         _validate_credentials_schema(google['credentials'])
-    for key, value in (data.get('calendar') or {}).items():
-        if not isinstance(value, bool):
-            raise ConfigError(f'calendar.{key} must be a boolean.')
+    for section in ('calendar', 'contacts'):
+        for key, value in (data.get(section) or {}).items():
+            if not isinstance(value, bool):
+                raise ConfigError(f'{section}.{key} must be a boolean.')
     if 'env' in data and not isinstance(data['env'], dict):
         raise ConfigError('env must be an object mapping names to strings.')
     env = data.get('env') or {}
@@ -430,6 +440,10 @@ def resolve_settings(overrides: Mapping[str, Any], config: ConfigFile | None = N
     calendar_write = _to_bool('calendar_write', get('calendar_write')[0])
     if calendar_write and not calendar:
         raise ConfigError('calendar.write requires calendar.enabled.')
+    contacts = _to_bool('contacts', get('contacts')[0])
+    contacts_write = _to_bool('contacts_write', get('contacts_write')[0])
+    if contacts_write and not contacts:
+        raise ConfigError('contacts.write requires contacts.enabled.')
     roots_raw = get('gmail_attachment_roots')
     source_raw = get('gmail_source_root')
     return Settings(
@@ -443,6 +457,8 @@ def resolve_settings(overrides: Mapping[str, Any], config: ConfigFile | None = N
         gmail=gmail,
         calendar=calendar,
         calendar_write=calendar_write,
+        contacts=contacts,
+        contacts_write=contacts_write,
         gmail_credentials=_normalize_credentials(get('gmail_credentials')[0]),
         gmail_drafts=gmail_drafts,
         gmail_attachment_roots=_to_path_list(
@@ -461,7 +477,7 @@ def check_settings(settings: Settings) -> None:
 
 
 def check_google_settings(settings: Settings) -> None:
-    if settings.gmail or settings.calendar:
+    if settings.gmail or settings.calendar or settings.contacts:
         try:
             credentials = validate_credentials(settings.gmail_credentials)
         except GmailError as exc:
@@ -472,6 +488,10 @@ def check_google_settings(settings: Settings) -> None:
             raise ConfigError('calendar.enabled requires calendar.readonly scope.')
         if settings.calendar_write and CALENDAR_EVENTS_SCOPE not in credentials['scopes']:
             raise ConfigError('calendar.write requires calendar.events scope.')
+        if settings.contacts and not {CONTACTS_SCOPE, OTHER_CONTACTS_SCOPE} <= credentials['scopes']:
+            raise ConfigError('contacts.enabled requires contacts.readonly and contacts.other.readonly scopes.')
+        if settings.contacts_write and CONTACTS_WRITE_SCOPE not in credentials['scopes']:
+            raise ConfigError('contacts.write requires contacts scope.')
         if settings.gmail_drafts and GMAIL_COMPOSE_SCOPE not in credentials['scopes']:
             raise ConfigError(
                 'gmail.drafts requires credentials authorized with the Gmail '
